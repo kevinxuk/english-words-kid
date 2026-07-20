@@ -196,6 +196,7 @@ body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg)
 <h1>🌟 英语单词小达人</h1>
 <p>广州（新）三年级上册 · 53天背词计划</p>
 </div>
+<div id="float-sync" style="position:fixed;bottom:70px;right:12px;background:rgba(255,255,255,.95);border-radius:20px;padding:4px 12px;font-size:.72rem;color:#bbb;box-shadow:0 2px 8px rgba(0,0,0,.1);z-index:500;transition:opacity .3s;pointer-events:none"></div>
 <div class="tabs">
 <button class="tab active" onclick="showView('dashboard')">首页</button>
 <button class="tab" onclick="showView('learn')">学单词</button>
@@ -1235,10 +1236,12 @@ const CLOUD_BLOB_KEY='cloud_blob_id';
 let cloudBlobId=localStorage.getItem(CLOUD_BLOB_KEY)||null;
 let cloudTimer=null,cloudSyncing=false;
 function cloudStatus(msg,type){
-const el=document.getElementById('cloud-status');if(!el)return;
 const icons={ok:'☁️',sync:'🔄',err:'⚠️',off:''};
-const colors={ok:'#52c41a',sync:'#1890ff',err:'#ff4d4f',off:'#999'};
-el.textContent=(icons[type]||'')+' '+msg;el.style.color=colors[type]||'#999';
+const colors={ok:'#52c41a',sync:'#1890ff',err:'#ff4d4f',off:'#bbb'};
+const text=(icons[type]||'')+' '+msg;
+const color=colors[type]||'#999';
+const el=document.getElementById('cloud-status');if(el){el.textContent=text;el.style.color=color}
+const fl=document.getElementById('float-sync');if(fl){fl.textContent=text;fl.style.color=color;if(type==='ok'){setTimeout(()=>{if(fl)fl.style.opacity='0.4'},3000);fl.style.opacity='1'}else{fl.style.opacity='1'}}
 }
 async function cloudSave(){
 if(cloudSyncing)return;
@@ -1281,16 +1284,16 @@ return false;
 }
 function scheduleCloudSync(){
 if(cloudTimer)clearTimeout(cloudTimer);
-cloudTimer=setTimeout(()=>{cloudSave()},3000);
+cloudTimer=setTimeout(()=>{cloudSave()},2000);
 }
 // Confetti
 function showConfetti(){for(let i=0;i<30;i++){const c=document.createElement('div');c.className='confetti';c.style.left=Math.random()*100+'vw';c.style.background=['#ff4d4f','#faad14','#52c41a','#4a90d9','#7b68ee'][Math.floor(Math.random()*5)];c.style.animationDelay=Math.random()*0.5+'s';document.body.appendChild(c);setTimeout(()=>c.remove(),3500)}}
 // Init
-document.addEventListener('DOMContentLoaded',async()=>{
+(async()=>{
 const loaded=await cloudLoad();
 renderDashboard();
-if(!cloudBlobId&&Object.keys(state.learned||{}).length>0){cloudSave()}
-});
+if(Object.keys(state.learned||{}).length>0){cloudSave()}
+})();
 renderDashboard();
 </script>
 </body>
