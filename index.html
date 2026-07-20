@@ -681,6 +681,16 @@ html+='<div class="card-box"><h3 style="margin-bottom:12px">🎮 开始学习</h
 '<div class="mode-card progress" onclick="showView(\'progress\')"><div class="mode-icon">📊</div><div class="mode-title">看进度</div><div class="mode-desc">查看学习统计</div></div>'+
 '<div class="mode-card wrong" onclick="showView(\'wrong\')"><div class="mode-icon">❌</div><div class="mode-title">错题本</div><div class="mode-desc">复习错过的词</div></div>'+
 '</div></div>';
+html+='<div class="backup-card" style="background:linear-gradient(135deg,#f6ffed,#e6fffb);border:1px solid #b7eb8f"><h3>☁️ 自动云同步（免配置）</h3>';
+if(cloudBlobId){
+html+='<p style="font-size:.85rem;color:#666;margin-bottom:8px">✅ 已开启自动同步，每次学习自动上传到云端</p>';
+html+='<p style="font-size:.8rem;color:#999;margin-bottom:8px">同步码：'+cloudBlobId.substring(0,13)+'...</p>';
+html+='<div class="backup-btns"><button class="btn btn-success" onclick="copySyncLink()">🔗 复制同步链接</button><button class="btn btn-outline" onclick="cloudSave()">⬆️ 立即同步</button></div>';
+}else{
+html+='<p style="font-size:.85rem;color:#666;margin-bottom:8px">学习几个单词后会自动创建云端备份。换设备时用同步链接恢复进度。</p>';
+html+='<div style="margin-top:8px"><p style="font-size:.8rem;color:#666;margin-bottom:4px">已有同步码？输入恢复进度：</p><div style="display:flex;gap:6px"><input type="text" id="sync-code-input" placeholder="粘贴同步码" style="flex:1;padding:6px 8px;border:1px solid #ddd;border-radius:6px;font-size:.8rem"><button class="btn btn-primary" onclick="enterSyncCode()" style="white-space:nowrap">恢复</button></div></div>';
+}
+html+='</div>';
 html+='<div class="backup-card" style="background:linear-gradient(135deg,#f0f5ff,#e6f7ff);border:1px solid #bae7ff"><h3>☁️ GitHub 云同步</h3>';
 const syncCfg=getSyncConfig();
 if(syncCfg.token&&syncCfg.owner){
@@ -1253,13 +1263,40 @@ const resp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{method:
 if(resp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);cloudSyncing=false;return cloudSave()}
 if(!resp.ok)throw new Error(resp.status);
 cloudStatus('已同步','ok');
+updateSyncUrl();
 }else{
 const resp=await fetch('https://jsonblob.com/api/jsonBlob',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
-if(resp.ok){const loc=resp.headers.get('Location')||'';const id=loc.split('/').pop();if(id){cloudBlobId=id;localStorage.setItem(CLOUD_BLOB_KEY,id);cloudStatus('已同步','ok')}}
+if(resp.ok){
+const loc=resp.headers.get('Location')||'';
+const xid=resp.headers.get('X-jsonblob-id')||'';
+const id=xid||loc.split('/').pop();
+if(id){cloudBlobId=id;localStorage.setItem(CLOUD_BLOB_KEY,id);cloudStatus('已同步','ok');updateSyncUrl()}
+}
 else throw new Error(resp.status);
 }
 }catch(e){cloudStatus('同步失败','err')}
 cloudSyncing=false;
+}
+function updateSyncUrl(){
+if(cloudBlobId){
+const url=window.location.pathname+'?sync='+cloudBlobId+window.location.hash;
+history.replaceState(null,'',url);
+}
+}
+function copySyncLink(){
+if(!cloudBlobId){alert('请先学习几个单词，同步会自动创建');return}
+const link=window.location.origin+window.location.pathname+'?sync='+cloudBlobId;
+if(navigator.clipboard){navigator.clipboard.writeText(link).then(()=>alert('✅ 同步链接已复制！\n\n在新设备浏览器中打开此链接即可恢复学习进度：\n'+link))}
+else{prompt('复制以下链接，在新设备浏览器中打开：',link)}
+}
+async function enterSyncCode(){
+const input=document.getElementById('sync-code-input');
+const code=(input?.value||'').trim();
+if(!code){alert('请输入同步码');return}
+cloudBlobId=code;localStorage.setItem(CLOUD_BLOB_KEY,code);
+const ok=await cloudLoad();
+if(ok){alert('✅ 进度已从云端恢复！');showView('dashboard')}
+else{alert('❌ 未找到云端数据，请检查同步码是否正确，或原设备是否已同步')}
 }
 async function cloudLoad(){
 if(!cloudBlobId)return;
@@ -1290,6 +1327,9 @@ cloudTimer=setTimeout(()=>{cloudSave()},2000);
 function showConfetti(){for(let i=0;i<30;i++){const c=document.createElement('div');c.className='confetti';c.style.left=Math.random()*100+'vw';c.style.background=['#ff4d4f','#faad14','#52c41a','#4a90d9','#7b68ee'][Math.floor(Math.random()*5)];c.style.animationDelay=Math.random()*0.5+'s';document.body.appendChild(c);setTimeout(()=>c.remove(),3500)}}
 // Init
 (async()=>{
+const urlParams=new URLSearchParams(window.location.search);
+const syncParam=urlParams.get('sync');
+if(syncParam&&!cloudBlobId){cloudBlobId=syncParam;localStorage.setItem(CLOUD_BLOB_KEY,syncParam)}
 const loaded=await cloudLoad();
 renderDashboard();
 if(Object.keys(state.learned||{}).length>0){cloudSave()}
