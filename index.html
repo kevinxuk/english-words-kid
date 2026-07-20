@@ -234,6 +234,38 @@ body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg)
 </div>
 </div>
 </div>
+<div class="import-modal" id="sync-modal">
+<div class="import-modal-content" style="max-width:420px;text-align:left">
+<h3 style="text-align:center">☁️ GitHub 云同步设置</h3>
+<div style="margin-bottom:12px">
+<label style="font-size:.85rem;display:block;margin-bottom:4px">GitHub 用户名</label>
+<input type="text" id="gh-username" placeholder="如 kevinxuk" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:.9rem">
+</div>
+<div style="margin-bottom:12px">
+<label style="font-size:.85rem;display:block;margin-bottom:4px">仓库名</label>
+<input type="text" id="gh-repo" placeholder="如 english-words-kid" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:.9rem">
+</div>
+<div style="margin-bottom:12px">
+<label style="font-size:.85rem;display:block;margin-bottom:4px">分支名</label>
+<input type="text" id="gh-branch" placeholder="master" value="master" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:.9rem">
+</div>
+<div style="margin-bottom:12px">
+<label style="font-size:.85rem;display:block;margin-bottom:4px">Personal Access Token</label>
+<input type="password" id="gh-token" placeholder="ghp_xxxx（需要repo权限）" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;font-size:.9rem">
+<p style="font-size:.75rem;color:#999;margin-top:4px">在 github.com/settings/tokens 创建，需勾选 repo 权限。Token 仅保存在本机浏览器。</p>
+</div>
+<div style="margin-bottom:16px">
+<label style="font-size:.85rem;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="gh-autosync" style="width:auto">自动同步（每次答题后自动上传）</label>
+</div>
+<div id="sync-status" style="text-align:center;font-size:.85rem;margin-bottom:12px;min-height:20px"></div>
+<div class="modal-btns" style="flex-wrap:wrap">
+<button class="btn btn-outline" onclick="closeSyncModal()">关闭</button>
+<button class="btn btn-outline" onclick="saveSyncConfig()">💾 保存设置</button>
+<button class="btn btn-primary" onclick="syncToGitHub()">⬆️ 上传进度</button>
+<button class="btn btn-success" onclick="syncFromGitHub()">⬇️ 下载进度</button>
+</div>
+</div>
+</div>
 <script>
 // ============= 词汇数据 =============
 const VOCAB = [
@@ -453,7 +485,7 @@ if(!state.retired)state.retired={};
 Object.keys(state.mastered).forEach(w=>{
 if(!state.masteredCount[w]){state.masteredCount[w]=1;state.firstMasteredDate[w]=new Date().toISOString()}
 });
-function save(){saveData(state)}
+function save(){saveData(state);scheduleAutoSync()}
 function getTodayStr(){const d=new Date();return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate()}
 function getPlanDay(){
 const start=new Date(2026,6,4);
@@ -645,6 +677,17 @@ html+='<div class="card-box"><h3 style="margin-bottom:12px">🎮 开始学习</h
 '<div class="mode-card progress" onclick="showView(\'progress\')"><div class="mode-icon">📊</div><div class="mode-title">看进度</div><div class="mode-desc">查看学习统计</div></div>'+
 '<div class="mode-card wrong" onclick="showView(\'wrong\')"><div class="mode-icon">❌</div><div class="mode-title">错题本</div><div class="mode-desc">复习错过的词</div></div>'+
 '</div></div>';
+html+='<div class="backup-card" style="background:linear-gradient(135deg,#f0f5ff,#e6f7ff);border:1px solid #bae7ff"><h3>☁️ GitHub 云同步</h3>';
+const syncCfg=getSyncConfig();
+if(syncCfg.token&&syncCfg.owner){
+html+='<p style="font-size:.85rem;color:#666;margin-bottom:8px">已连接：<strong>'+syncCfg.owner+'/'+syncCfg.repo+'</strong>'+(syncCfg.autoSync?' <span style="color:#52c41a">自动同步✓</span>':'')+'</p>';
+if(syncCfg.lastSync)html+='<p style="font-size:.8rem;color:#999;margin-bottom:8px">上次同步：'+new Date(syncCfg.lastSync).toLocaleString('zh-CN')+'</p>';
+html+='<button class="btn btn-primary" onclick="openSyncModal()">⚙️ 同步设置 / 手动同步</button>';
+}else{
+html+='<p style="font-size:.85rem;color:#666;margin-bottom:8px">将学习进度保存到 GitHub，换设备也能继续学。需要 GitHub 账号和 Token。</p>';
+html+='<button class="btn btn-primary" onclick="openSyncModal()">🔗 配置云同步</button>';
+}
+html+='</div>';
 html+='<div class="backup-card"><h3>💾 数据备份与恢复</h3><p style="font-size:.85rem;color:#666">导出学习进度到文件，或从文件导入恢复进度。建议定期导出备份，防止数据丢失。</p><div class="backup-btns"><button class="btn btn-primary" onclick="exportData()">📤 导出进度</button><button class="btn btn-outline" onclick="triggerImport()">📥 导入进度</button></div><div class="backup-info">💡 提示：换电脑或清理浏览器数据前，请先导出进度文件保存。导入时选择之前导出的JSON文件即可恢复。</div></div>';
 document.getElementById('view-dashboard').innerHTML=html;
 }
@@ -1094,6 +1137,95 @@ save();
 closeImportModal();
 showView('dashboard');
 alert('✅ 学习进度导入成功！');
+}
+// ============= GitHub 云同步 =============
+const GITHUB_CONFIG_KEY='github_sync_config';
+let syncSha=null,syncTimer=null,isSyncing=false;
+function getSyncConfig(){try{return JSON.parse(localStorage.getItem(GITHUB_CONFIG_KEY))||{}}catch(e){return{}}}
+function saveSyncConfigToStorage(c){localStorage.setItem(GITHUB_CONFIG_KEY,JSON.stringify(c))}
+function utf8ToB64(str){return btoa(unescape(encodeURIComponent(str)))}
+function b64ToUtf8(b64){return decodeURIComponent(escape(atob(b64.replace(/\n/g,''))))}
+function ghHeaders(token){return{'Authorization':'token '+token,'Accept':'application/vnd.github.v3+json','Content-Type':'application/json'}}
+function openSyncModal(){
+const c=getSyncConfig();
+document.getElementById('gh-username').value=c.owner||'';
+document.getElementById('gh-repo').value=c.repo||'';
+document.getElementById('gh-branch').value=c.branch||'master';
+document.getElementById('gh-token').value=c.token||'';
+document.getElementById('gh-autosync').checked=!!c.autoSync;
+showSyncStatus(c.lastSync?('上次同步：'+new Date(c.lastSync).toLocaleString('zh-CN')):'','info');
+document.getElementById('sync-modal').classList.add('show');
+}
+function closeSyncModal(){document.getElementById('sync-modal').classList.remove('show')}
+function saveSyncConfig(){
+const c={owner:document.getElementById('gh-username').value.trim(),repo:document.getElementById('gh-repo').value.trim(),branch:document.getElementById('gh-branch').value.trim()||'master',token:document.getElementById('gh-token').value.trim(),autoSync:document.getElementById('gh-autosync').checked};
+if(!c.owner||!c.repo||!c.token){showSyncStatus('请填写用户名、仓库名和Token','error');return}
+const old=getSyncConfig();
+c.lastSync=old.lastSync||null;
+saveSyncConfigToStorage(c);
+showSyncStatus('✅ 设置已保存','success');
+}
+function showSyncStatus(msg,type){
+const el=document.getElementById('sync-status');if(!el)return;
+const colors={success:'#52c41a',error:'#ff4d4f',syncing:'#1890ff',info:'#888'};
+el.textContent=msg;el.style.color=colors[type]||'#888';
+}
+async function ghReadProgress(){
+const c=getSyncConfig();if(!c.token||!c.owner||!c.repo)throw new Error('未配置同步');
+const url='https://api.github.com/repos/'+c.owner+'/'+c.repo+'/contents/progress.json?ref='+(c.branch||'master');
+const resp=await fetch(url,{headers:ghHeaders(c.token)});
+if(resp.status===404)return null;
+if(!resp.ok)throw new Error('读取失败('+resp.status+')');
+const data=await resp.json();
+return{data:JSON.parse(b64ToUtf8(data.content)),sha:data.sha};
+}
+async function ghWriteProgress(progressData,sha){
+const c=getSyncConfig();if(!c.token||!c.owner||!c.repo)throw new Error('未配置同步');
+const url='https://api.github.com/repos/'+c.owner+'/'+c.repo+'/contents/progress.json';
+const body={message:'更新学习进度 '+new Date().toLocaleString('zh-CN'),content:utf8ToB64(JSON.stringify(progressData)),branch:c.branch||'master'};
+if(sha)body.sha=sha;
+const resp=await fetch(url,{method:'PUT',headers:ghHeaders(c.token),body:JSON.stringify(body)});
+if(!resp.ok)throw new Error('写入失败('+resp.status+')');
+const result=await resp.json();
+return result.content.sha;
+}
+async function syncToGitHub(){
+const c=getSyncConfig();if(!c.token){showSyncStatus('请先配置GitHub Token','error');return}
+if(isSyncing)return;isSyncing=true;
+showSyncStatus('⬆️ 上传中...','syncing');
+try{
+const newSha=await ghWriteProgress(state,syncSha);
+syncSha=newSha;c.lastSync=new Date().toISOString();saveSyncConfigToStorage(c);
+showSyncStatus('✅ 上传成功 '+new Date().toLocaleTimeString('zh-CN'),'success');
+}catch(e){showSyncStatus('❌ '+e.message,'error')}
+isSyncing=false;
+}
+async function syncFromGitHub(){
+const c=getSyncConfig();if(!c.token){showSyncStatus('请先配置GitHub Token','error');return}
+if(isSyncing)return;isSyncing=true;
+showSyncStatus('⬇️ 下载中...','syncing');
+try{
+const result=await ghReadProgress();
+if(!result){showSyncStatus('GitHub上暂无进度数据','info');isSyncing=false;return}
+syncSha=result.sha;
+const remote=result.data;
+state.learned=remote.learned||{};state.mastered=remote.mastered||{};
+state.wrong=remote.wrong||{};state.stats=remote.stats||{totalAnswered:0,correct:0,daysStudied:[]};
+state.dayProgress=remote.dayProgress||{};state.recordingScores=remote.recordingScores||{};
+state.masteredCount=remote.masteredCount||{};state.firstMasteredDate=remote.firstMasteredDate||{};
+state.retired=remote.retired||{};
+save();c.lastSync=new Date().toISOString();saveSyncConfigToStorage(c);
+showSyncStatus('✅ 下载成功 '+new Date().toLocaleTimeString('zh-CN'),'success');
+closeSyncModal();
+const activeView=document.querySelector('.view.active')?.id?.replace('view-','')||'dashboard';
+showView(activeView);
+}catch(e){showSyncStatus('❌ '+e.message,'error')}
+isSyncing=false;
+}
+function scheduleAutoSync(){
+const c=getSyncConfig();if(!c.autoSync||!c.token)return;
+if(syncTimer)clearTimeout(syncTimer);
+syncTimer=setTimeout(()=>{syncToGitHub()},5000);
 }
 // Confetti
 function showConfetti(){for(let i=0;i<30;i++){const c=document.createElement('div');c.className='confetti';c.style.left=Math.random()*100+'vw';c.style.background=['#ff4d4f','#faad14','#52c41a','#4a90d9','#7b68ee'][Math.floor(Math.random()*5)];c.style.animationDelay=Math.random()*0.5+'s';document.body.appendChild(c);setTimeout(()=>c.remove(),3500)}}
