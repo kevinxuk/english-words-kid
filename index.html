@@ -482,10 +482,13 @@ if(!state.recordingScores)state.recordingScores={};
 if(!state.masteredCount)state.masteredCount={};
 if(!state.firstMasteredDate)state.firstMasteredDate={};
 if(!state.retired)state.retired={};
+if(!state.todayCorrect)state.todayCorrect={};
 // Migrate old data: give existing mastered words a head start
 Object.keys(state.mastered).forEach(w=>{
 if(!state.masteredCount[w]){state.masteredCount[w]=1;state.firstMasteredDate[w]=new Date().toISOString()}
 });
+// Cleanup old todayCorrect entries (keep last 2 days)
+(function(){const now=Date.now();Object.keys(state.todayCorrect||{}).forEach(k=>{const parts=k.split('-');if(parts.length>=3){const d=new Date(parts[0],parts[1]-1,parts[2]);if((now-d.getTime())/86400000>2)delete state.todayCorrect[k]}})})();
 function save(){saveData(state);scheduleAutoSync();scheduleCloudSync()}
 function getTodayStr(){const d=new Date();return d.getFullYear()+'-'+(d.getMonth()+1)+'-'+d.getDate()}
 function getPlanDay(){
@@ -494,17 +497,44 @@ const today=new Date();today.setHours(0,0,0,0);start.setHours(0,0,0,0);
 const diff=Math.floor((today-start)/(86400000))+1;
 return diff>0&&diff<=53?diff:diff<=0?1:53;
 }
-function getNewWords(day){let words=VOCAB.filter(v=>v.d===day&&!state.retired[v.w]);let nd=day+1;while(words.length===0&&nd<=53){words=VOCAB.filter(v=>v.d===nd&&!state.retired[v.w]);nd++}return words}
+function seededRandom(seed){let s=seed;return function(){s=(s*9301+49297)%233280;return s/233280}}
+function seededShuffle(arr,seed){const rng=seededRandom(seed);const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+function getNewWords(day){
+const today=getTodayStr();
+let words=VOCAB.filter(v=>v.d===day&&!state.retired[v.w]);
+let nd=day+1;
+while(words.length===0&&nd<=53){words=VOCAB.filter(v=>v.d===nd&&!state.retired[v.w]);nd++}
+// Prioritize words not yet marked correct today
+let notSeenToday=words.filter(v=>!state.todayCorrect[today+'-'+v.w]);
+let pool=notSeenToday.length>0?notSeenToday:words;
+return seededShuffle(pool,day*11+7)
+}
 function getReviewWords(day){
+const today=getTodayStr();
 let candidates=VOCAB.filter(v=>v.d<day&&state.learned[v.w]&&!state.retired[v.w]);
-let wrong=candidates.filter(v=>state.wrong[v.w]);
-let notWrong=candidates.filter(v=>!state.wrong[v.w]);
+// Prefer words not yet reviewed correctly today
+let notSeenToday=candidates.filter(v=>!state.todayCorrect[today+'-'+v.w]);
+let seenToday=candidates.filter(v=>state.todayCorrect[today+'-'+v.w]);
+let wrong=notSeenToday.filter(v=>state.wrong[v.w]);
+let notWrong=notSeenToday.filter(v=>!state.wrong[v.w]);
 notWrong.sort((a,b)=>(state.masteredCount[a.w]||0)-(state.masteredCount[b.w]||0));
-let ordered=wrong.concat(notWrong);
+// Shuffle with daily seed for variety
+let shuffledWrong=seededShuffle(wrong,day*3+1);
+let shuffledNotWrong=seededShuffle(notWrong,day*7+13);
+let ordered=shuffledWrong.concat(shuffledNotWrong);
+// Add seen-today words at lower priority
+if(seenToday.length>0){
+let sWrong=seenToday.filter(v=>state.wrong[v.w]);
+let sNotWrong=seenToday.filter(v=>!state.wrong[v.w]);
+sNotWrong.sort((a,b)=>(state.masteredCount[a.w]||0)-(state.masteredCount[b.w]||0));
+ordered=ordered.concat(seededShuffle(sWrong,day*5+3),seededShuffle(sNotWrong,day*9+17))
+}
 let count=day<=38?20:day<=45?15:5;
 if(ordered.length<=count)return ordered;
+// Rotate window by day for different subset each day
+let offset=(day*3)%ordered.length;
 let result=[];
-for(let i=0;i<count;i++){result.push(ordered[i%ordered.length])}
+for(let i=0;i<count;i++){result.push(ordered[(offset+i)%ordered.length])}
 return result;
 }
 function checkRetiredStatus(){
@@ -514,10 +544,10 @@ Object.keys(state.mastered).forEach(word=>{
 if(state.retired[word])return;
 const count=state.masteredCount[word]||0;
 const first=state.firstMasteredDate[word];
-if(count>=3){state.retired[word]=true;changed=true;return}
+if(count>=2){state.retired[word]=true;changed=true;return}
 if(first){
 const days=(now-new Date(first))/86400000;
-if(days>=2&&state.mastered[word]&&!state.wrong[word]){state.retired[word]=true;changed=true}
+if(days>=1&&state.mastered[word]&&!state.wrong[word]){state.retired[word]=true;changed=true}
 }
 });
 if(changed)save()
@@ -525,7 +555,24 @@ if(changed)save()
 function getLearnedWords(){return VOCAB.filter(v=>state.learned[v.w])}
 function getMasteredWords(){return VOCAB.filter(v=>state.mastered[v.w])}
 function getWrongWords(){return VOCAB.filter(v=>state.wrong[v.w])}
-function speak(text){if('speechSynthesis' in window){const u=new SpeechSynthesisUtterance(text);u.lang='en-US';u.rate=0.8;speechSynthesis.speak(u)}}
+// ============= TTS 语音合成 =============
+const TTS_CONFIG={baseUrl:'https://api.stepfun.com/step_plan/v1',apiKey:'6shCgHYDkga1mcMObcbPHLJfj3vPafkHGMoiMegFKMZOfy1IlNIxDNSOj6co9Izj2',model:'stepaudio-2.5-tts',voice:'linjiajiejie',speed:1,format:'mp3',instruction:'开心的，语气自然，语速偏慢'};
+let ttsAudioCache={},ttsAudioEl=null,ttsFallbackOnly=false;
+function speak(text){
+if(!text)return;
+// If API failed before (CORS etc), go straight to fallback
+if(ttsFallbackOnly){speakFallback(text);return}
+// Check cache first
+if(ttsAudioCache[text]){
+if(!ttsAudioEl)ttsAudioEl=new Audio();
+ttsAudioEl.src=ttsAudioCache[text];
+ttsAudioEl.play().catch(()=>{});
+return;
+}
+// Try stepfun TTS API
+fetch(TTS_CONFIG.baseUrl+'/audio/speech',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+TTS_CONFIG.apiKey},body:JSON.stringify({model:TTS_CONFIG.model,input:text,voice:TTS_CONFIG.voice,speed:TTS_CONFIG.speed,response_format:TTS_CONFIG.format,instruction:TTS_CONFIG.instruction})}).then(resp=>{if(!resp.ok)throw new Error('TTS API error '+resp.status);return resp.blob()}).then(blob=>{const url=URL.createObjectURL(blob);ttsAudioCache[text]=url;if(!ttsAudioEl)ttsAudioEl=new Audio();ttsAudioEl.src=url;ttsAudioEl.play().catch(()=>{speakFallback(text)})}).catch(()=>{ttsFallbackOnly=true;speakFallback(text)});
+}
+function speakFallback(text){if('speechSynthesis' in window){try{const u=new SpeechSynthesisUtterance(text);u.lang='en-US';u.rate=0.8;speechSynthesis.speak(u)}catch(e){}}}
 // ============= 录音自动评分功能 =============
 let mediaRecorder=null,audioChunks=[],isRecording=false,recordingTimer=null,recordingStart=0;
 let currentAudioURL=null,currentRecognitionResult=null;
@@ -717,7 +764,7 @@ if(learnWords.length===0){document.getElementById('view-learn').innerHTML='<div 
 const w=learnWords[learnIdx];
 const mc=state.masteredCount[w.w]||0;
 let html='<div style="text-align:center;margin-bottom:12px"><span class="day-badge">第'+(learnIdx+1)+'/'+learnWords.length+'个</span>';
-if(mc>0&&!state.retired[w.w])html+='<span class="day-badge" style="background:#fff7e6;color:#fa8c16;margin-left:6px">掌握 '+mc+'/3</span>';
+if(mc>0&&!state.retired[w.w])html+='<span class="day-badge" style="background:#fff7e6;color:#fa8c16;margin-left:6px">掌握 '+mc+'/2</span>';
 if(state.wrong[w.w])html+='<span class="day-badge" style="background:#fff1f0;color:#cf1322;margin-left:6px">错题</span>';
 html+='</div>';
 html+='<div class="flashcard-container"><div class="flashcard" id="flashcard" onclick="flipCard()">';
@@ -755,7 +802,8 @@ const w=learnWords[learnIdx].w;
 state.learned[w]=true;state.mastered[w]=true;delete state.wrong[w];
 state.masteredCount[w]=(state.masteredCount[w]||0)+1;
 if(!state.firstMasteredDate[w])state.firstMasteredDate[w]=new Date().toISOString();
-if((state.masteredCount[w]||0)>=3)state.retired[w]=true;
+if((state.masteredCount[w]||0)>=2)state.retired[w]=true;
+state.todayCorrect[getTodayStr()+'-'+w]=true;
 save()}
 nextCard()}
 function markWrong(){
@@ -763,6 +811,7 @@ if(learnWords[learnIdx]){
 const w=learnWords[learnIdx].w;
 state.learned[w]=true;state.wrong[w]=true;delete state.mastered[w];
 state.masteredCount[w]=0;delete state.firstMasteredDate[w];delete state.retired[w];
+delete state.todayCorrect[getTodayStr()+'-'+w];
 save()}
 nextCard()}
 function nextCard(){learnIdx++;if(learnIdx>=learnWords.length){showConfetti();document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🎉</div><h3>太棒了！</h3><p>本组单词学习完成！</p><div class="controls" style="margin-top:20px"><button class="btn btn-primary" onclick="learnIdx=0;renderLearn()">再学一遍</button><button class="btn btn-outline" onclick="showView(\'dashboard\')">返回首页</button></div></div>'}else{renderLearn()}}
@@ -800,10 +849,14 @@ const correct=practiceWord.w.toLowerCase();
 if(val===correct){
 input.classList.add('correct');feedback.className='feedback show success';feedback.innerHTML='✅ 正确！'+practiceWord.e;
 state.learned[practiceWord.w]=true;state.mastered[practiceWord.w]=true;delete state.wrong[practiceWord.w];
+state.masteredCount[practiceWord.w]=(state.masteredCount[practiceWord.w]||0)+1;
+if(!state.firstMasteredDate[practiceWord.w])state.firstMasteredDate[practiceWord.w]=new Date().toISOString();
+if((state.masteredCount[practiceWord.w]||0)>=2)state.retired[practiceWord.w]=true;
+state.todayCorrect[getTodayStr()+'-'+practiceWord.w]=true;
 state.stats.totalAnswered++;state.stats.correct++;save();showConfetti();
 }else{
 input.classList.add('wrong');feedback.className='feedback show error';feedback.innerHTML='❌ 不对。正确答案：<strong>'+practiceWord.w+'</strong>';
-state.wrong[practiceWord.w]=true;state.stats.totalAnswered++;save()}
+state.wrong[practiceWord.w]=true;state.stats.totalAnswered++;delete state.todayCorrect[getTodayStr()+'-'+practiceWord.w];save()}
 }
 function showHint(){const input=document.getElementById('spell-input');if(input&&practiceWord){const w=practiceWord.w;let hint='';for(let i=0;i<w.length;i++){hint+=i<Math.ceil(w.length/2)?w[i]:'_'}input.value=hint;input.focus()}}
 // Quiz mode
@@ -852,7 +905,7 @@ const q=quizQuestions[quizIdx];const correctIdx=q.options.findIndex(o=>o===q.wor
 const options=document.querySelectorAll('.quiz-option');
 options.forEach((opt,i)=>{if(i===correctIdx)opt.classList.add('correct');if(i===selectedIdx&&i!==correctIdx)opt.classList.add('wrong')});
 state.stats.totalAnswered++;
-if(selectedIdx===correctIdx){quizScore++;state.stats.correct++;state.learned[q.word.w]=true;state.mastered[q.word.w]=true;delete state.wrong[q.word.w]}else{state.wrong[q.word.w]=true;state.learned[q.word.w]=true}
+if(selectedIdx===correctIdx){quizScore++;state.stats.correct++;state.learned[q.word.w]=true;state.mastered[q.word.w]=true;delete state.wrong[q.word.w];state.masteredCount[q.word.w]=(state.masteredCount[q.word.w]||0)+1;if(!state.firstMasteredDate[q.word.w])state.firstMasteredDate[q.word.w]=new Date().toISOString();if((state.masteredCount[q.word.w]||0)>=2)state.retired[q.word.w]=true;state.todayCorrect[getTodayStr()+'-'+q.word.w]=true}else{state.wrong[q.word.w]=true;state.learned[q.word.w]=true;delete state.todayCorrect[getTodayStr()+'-'+q.word.w]}
 save();
 setTimeout(()=>{quizIdx++;renderQuizQuestion()},1500);
 }
@@ -938,8 +991,8 @@ if(correct){input.classList.add('correct');fb.className='feedback show success';
 else{input.classList.add('wrong');fb.className='feedback show error';fb.innerHTML='❌ 正确答案：'+q.word.w}
 }
 state.stats.totalAnswered++;
-if(correct){examScore++;state.stats.correct++;state.mastered[q.word.w]=true;delete state.wrong[q.word.w]}
-else{state.wrong[q.word.w]=true}
+if(correct){examScore++;state.stats.correct++;state.mastered[q.word.w]=true;delete state.wrong[q.word.w];state.masteredCount[q.word.w]=(state.masteredCount[q.word.w]||0)+1;if(!state.firstMasteredDate[q.word.w])state.firstMasteredDate[q.word.w]=new Date().toISOString();if((state.masteredCount[q.word.w]||0)>=2)state.retired[q.word.w]=true;state.todayCorrect[getTodayStr()+'-'+q.word.w]=true}
+else{state.wrong[q.word.w]=true;delete state.todayCorrect[getTodayStr()+'-'+q.word.w]}
 save();
 setTimeout(()=>{examIdx++;renderExamQuestion()},1500);
 }
@@ -1062,7 +1115,7 @@ const w=VOCAB.find(v=>v.w===word);if(!w)return;
 const el=document.getElementById('wrong-detail');
 el.innerHTML='<div class="card-box" style="margin-top:12px"><div style="font-size:1.5rem;font-weight:bold;color:var(--primary)">'+w.w+'</div>'+(w.p?'<div style="color:#888;margin:4px 0">'+w.p+'</div>':'')+'<div style="font-size:1.2rem;margin:8px 0">'+w.m+'</div><div style="color:#666;font-size:.9rem">'+w.e+'</div><div style="color:#999;font-size:.8rem;margin-top:4px">'+w.ez+'</div><div class="controls" style="margin-top:16px"><button class="btn btn-outline" onclick="speak(\''+w.w.replace(/'/g,"\\'")+'\')">🔊 发音</button><button class="btn btn-success" onclick="clearWrong(\''+w.w.replace(/'/g,"\\'")+'\')">✅ 已掌握</button></div></div>';
 }
-function clearWrong(word){delete state.wrong[word];state.mastered[word]=true;state.masteredCount[word]=(state.masteredCount[word]||0)+1;if(!state.firstMasteredDate[word])state.firstMasteredDate[word]=new Date().toISOString();if((state.masteredCount[word]||0)>=3)state.retired[word]=true;save();renderWrong()}
+function clearWrong(word){delete state.wrong[word];state.mastered[word]=true;state.masteredCount[word]=(state.masteredCount[word]||0)+1;if(!state.firstMasteredDate[word])state.firstMasteredDate[word]=new Date().toISOString();if((state.masteredCount[word]||0)>=2)state.retired[word]=true;state.todayCorrect[getTodayStr()+'-'+word]=true;save();renderWrong()}
 // ============= 数据导出/导入 =============
 function exportData(){
 const exportObj={
@@ -1145,7 +1198,8 @@ dayProgress:pendingImportData.dayProgress||{},
 recordingScores:pendingImportData.recordingScores||{},
 masteredCount:pendingImportData.masteredCount||{},
 firstMasteredDate:pendingImportData.firstMasteredDate||{},
-retired:pendingImportData.retired||{}
+retired:pendingImportData.retired||{},
+todayCorrect:pendingImportData.todayCorrect||{}
 };
 save();
 closeImportModal();
@@ -1227,7 +1281,7 @@ state.learned=remote.learned||{};state.mastered=remote.mastered||{};
 state.wrong=remote.wrong||{};state.stats=remote.stats||{totalAnswered:0,correct:0,daysStudied:[]};
 state.dayProgress=remote.dayProgress||{};state.recordingScores=remote.recordingScores||{};
 state.masteredCount=remote.masteredCount||{};state.firstMasteredDate=remote.firstMasteredDate||{};
-state.retired=remote.retired||{};
+state.retired=remote.retired||{};state.todayCorrect=remote.todayCorrect||{};
 save();c.lastSync=new Date().toISOString();saveSyncConfigToStorage(c);
 showSyncStatus('✅ 下载成功 '+new Date().toLocaleTimeString('zh-CN'),'success');
 closeSyncModal();
@@ -1312,7 +1366,7 @@ state.learned=remote.learned||{};state.mastered=remote.mastered||{};
 state.wrong=remote.wrong||{};state.stats=remote.stats||{totalAnswered:0,correct:0,daysStudied:[]};
 state.dayProgress=remote.dayProgress||{};state.recordingScores=remote.recordingScores||{};
 state.masteredCount=remote.masteredCount||{};state.firstMasteredDate=remote.firstMasteredDate||{};
-state.retired=remote.retired||{};
+state.retired=remote.retired||{};state.todayCorrect=remote.todayCorrect||{};
 saveData(state);cloudStatus('已从云端恢复','ok');
 return true;
 }
