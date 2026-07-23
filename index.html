@@ -1206,6 +1206,70 @@ closeImportModal();
 showView('dashboard');
 alert('✅ 学习进度导入成功！');
 }
+// ============= 智能合并函数 =============
+function mergeStates(local,remote){
+if(!remote||typeof remote!=='object')return local;
+const merged={};
+// 并集：任一设备有就算有
+merged.learned=Object.assign({},local.learned||{},remote.learned||{});
+// 并集：任一设备掌握就算掌握
+merged.mastered=Object.assign({},local.mastered||{},remote.mastered||{});
+// wrong：只在两边都没掌握时保留 wrong 状态
+const allWords=new Set([...Object.keys(local.wrong||{}),...Object.keys(remote.wrong||{})]);
+merged.wrong={};
+allWords.forEach(w=>{
+if(!merged.mastered[w]){
+if(local.wrong&&local.wrong[w])merged.wrong[w]=true;
+if(remote.wrong&&remote.wrong[w])merged.wrong[w]=true
+}
+});
+// retired：并集
+merged.retired=Object.assign({},local.retired||{},remote.retired||{});
+// masteredCount：取较大值
+const allCounts=new Set([...Object.keys(local.masteredCount||{}),...Object.keys(remote.masteredCount||{})]);
+merged.masteredCount={};
+allCounts.forEach(w=>{
+const lc=(local.masteredCount&&local.masteredCount[w])||0;
+const rc=(remote.masteredCount&&remote.masteredCount[w])||0;
+merged.masteredCount[w]=Math.max(lc,rc)
+});
+// firstMasteredDate：取较早的日期
+const allDates=new Set([...Object.keys(local.firstMasteredDate||{}),...Object.keys(remote.firstMasteredDate||{})]);
+merged.firstMasteredDate={};
+allDates.forEach(w=>{
+const ld=(local.firstMasteredDate&&local.firstMasteredDate[w])||null;
+const rd=(remote.firstMasteredDate&&remote.firstMasteredDate[w])||null;
+if(ld&&rd)merged.firstMasteredDate[w]=ld<rd?ld:rd;
+else merged.firstMasteredDate[w]=ld||rd
+});
+// todayCorrect：并集
+merged.todayCorrect=Object.assign({},local.todayCorrect||{},remote.todayCorrect||{});
+// dayProgress：并集
+merged.dayProgress=Object.assign({},local.dayProgress||{},remote.dayProgress||{});
+// stats：totalAnswered/correct 取较大值，daysStudied 并集
+const ls=local.stats||{totalAnswered:0,correct:0,daysStudied:[]};
+const rs=remote.stats||{totalAnswered:0,correct:0,daysStudied:[]};
+merged.stats={
+totalAnswered:Math.max(ls.totalAnswered||0,rs.totalAnswered||0),
+correct:Math.max(ls.correct||0,rs.correct||0),
+daysStudied:Array.from(new Set([...(ls.daysStudied||[]),...(rs.daysStudied||[])]))
+};
+// recordingScores：按词合并数组，按 date 去重
+const allRecWords=new Set([...Object.keys(local.recordingScores||{}),...Object.keys(remote.recordingScores||{})]);
+merged.recordingScores={};
+allRecWords.forEach(w=>{
+const la=(local.recordingScores&&local.recordingScores[w])||[];
+const ra=(remote.recordingScores&&remote.recordingScores[w])||[];
+const seen=new Set();
+const mergedArr=[];
+[...la,...ra].sort((a,b)=>new Date(a.date)-new Date(b.date)).forEach(r=>{
+const key=r.date+'-'+r.score;
+if(!seen.has(key)){seen.add(key);mergedArr.push(r)}
+});
+merged.recordingScores[w]=mergedArr
+});
+return merged
+}
 // ============= GitHub 云同步 =============
 const GITHUB_CONFIG_KEY='github_sync_config';
 let syncSha=null,syncTimer=null,isSyncing=false;
@@ -1260,30 +1324,50 @@ return result.content.sha;
 async function syncToGitHub(){
 const c=getSyncConfig();if(!c.token){showSyncStatus('请先配置GitHub Token','error');return}
 if(isSyncing)return;isSyncing=true;
-showSyncStatus('⬆️ 上传中...','syncing');
+showSyncStatus('⬆️ 上传中(合并)...','syncing');
 try{
+// 先读取GitHub上的远端数据
+const remoteResult=await ghReadProgress();
+let mergedState=state;
+if(remoteResult){
+syncSha=remoteResult.sha;
+const remote=remoteResult.data;
+if(remote&&typeof remote==='object'){
+// 合并本地和远端数据
+const m=mergeStates(state,remote);
+state.learned=m.learned;state.mastered=m.mastered;
+state.wrong=m.wrong;state.stats=m.stats;
+state.dayProgress=m.dayProgress;state.recordingScores=m.recordingScores;
+state.masteredCount=m.masteredCount;state.firstMasteredDate=m.firstMasteredDate;
+state.retired=m.retired;state.todayCorrect=m.todayCorrect;
+saveData(state)
+}
+}
+// 上传合并后的数据
 const newSha=await ghWriteProgress(state,syncSha);
 syncSha=newSha;c.lastSync=new Date().toISOString();saveSyncConfigToStorage(c);
-showSyncStatus('✅ 上传成功 '+new Date().toLocaleTimeString('zh-CN'),'success');
+showSyncStatus('✅ 上传成功(已合并) '+new Date().toLocaleTimeString('zh-CN'),'success');
 }catch(e){showSyncStatus('❌ '+e.message,'error')}
 isSyncing=false;
 }
 async function syncFromGitHub(){
 const c=getSyncConfig();if(!c.token){showSyncStatus('请先配置GitHub Token','error');return}
 if(isSyncing)return;isSyncing=true;
-showSyncStatus('⬇️ 下载中...','syncing');
+showSyncStatus('⬇️ 下载并合并中...','syncing');
 try{
 const result=await ghReadProgress();
 if(!result){showSyncStatus('GitHub上暂无进度数据','info');isSyncing=false;return}
 syncSha=result.sha;
 const remote=result.data;
-state.learned=remote.learned||{};state.mastered=remote.mastered||{};
-state.wrong=remote.wrong||{};state.stats=remote.stats||{totalAnswered:0,correct:0,daysStudied:[]};
-state.dayProgress=remote.dayProgress||{};state.recordingScores=remote.recordingScores||{};
-state.masteredCount=remote.masteredCount||{};state.firstMasteredDate=remote.firstMasteredDate||{};
-state.retired=remote.retired||{};state.todayCorrect=remote.todayCorrect||{};
+// 智能合并而非整体替换
+const merged=mergeStates(state,remote);
+state.learned=merged.learned;state.mastered=merged.mastered;
+state.wrong=merged.wrong;state.stats=merged.stats;
+state.dayProgress=merged.dayProgress;state.recordingScores=merged.recordingScores;
+state.masteredCount=merged.masteredCount;state.firstMasteredDate=merged.firstMasteredDate;
+state.retired=merged.retired;state.todayCorrect=merged.todayCorrect;
 save();c.lastSync=new Date().toISOString();saveSyncConfigToStorage(c);
-showSyncStatus('✅ 下载成功 '+new Date().toLocaleTimeString('zh-CN'),'success');
+showSyncStatus('✅ 下载并合并成功 '+new Date().toLocaleTimeString('zh-CN'),'success');
 closeSyncModal();
 const activeView=document.querySelector('.view.active')?.id?.replace('view-','')||'dashboard';
 showView(activeView);
@@ -1309,16 +1393,34 @@ const fl=document.getElementById('float-sync');if(fl){fl.textContent=text;fl.sty
 }
 async function cloudSave(){
 if(cloudSyncing)return;
-const data=JSON.stringify(state);
 cloudSyncing=true;cloudStatus('同步中...','sync');
 try{
 if(cloudBlobId){
+// 先拉取云端数据，合并后再上传
+const getResp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{headers:{'Accept':'application/json'}});
+if(getResp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);cloudSyncing=false;return cloudSave()}
+if(getResp.ok){
+const remote=await getResp.json();
+if(remote&&typeof remote==='object'){
+// 合并本地和云端数据
+const merged=mergeStates(state,remote);
+// 更新本地状态为合并结果
+state.learned=merged.learned;state.mastered=merged.mastered;
+state.wrong=merged.wrong;state.stats=merged.stats;
+state.dayProgress=merged.dayProgress;state.recordingScores=merged.recordingScores;
+state.masteredCount=merged.masteredCount;state.firstMasteredDate=merged.firstMasteredDate;
+state.retired=merged.retired;state.todayCorrect=merged.todayCorrect;
+saveData(state)
+}
+}
+// 上传合并后的数据
+const data=JSON.stringify(state);
 const resp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{method:'PUT',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
-if(resp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);cloudSyncing=false;return cloudSave()}
 if(!resp.ok)throw new Error(resp.status);
-cloudStatus('已同步','ok');
-updateSyncUrl();
+cloudStatus('已同步','ok');updateSyncUrl();
 }else{
+// 首次创建：直接上传本地数据
+const data=JSON.stringify(state);
 const resp=await fetch('https://jsonblob.com/api/jsonBlob',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
 if(resp.ok){
 const loc=resp.headers.get('Location')||'';
@@ -1353,25 +1455,23 @@ if(ok){alert('✅ 进度已从云端恢复！');showView('dashboard')}
 else{alert('❌ 未找到云端数据，请检查同步码是否正确，或原设备是否已同步')}
 }
 async function cloudLoad(){
-if(!cloudBlobId)return;
+if(!cloudBlobId)return false;
 try{
 const resp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{headers:{'Accept':'application/json'}});
 if(resp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);return false}
 if(!resp.ok)return false;
 const remote=await resp.json();
-const remoteLearned=Object.keys(remote.learned||{}).length;
-const localLearned=Object.keys(state.learned||{}).length;
-if(remoteLearned>=localLearned&&remoteLearned>0){
-state.learned=remote.learned||{};state.mastered=remote.mastered||{};
-state.wrong=remote.wrong||{};state.stats=remote.stats||{totalAnswered:0,correct:0,daysStudied:[]};
-state.dayProgress=remote.dayProgress||{};state.recordingScores=remote.recordingScores||{};
-state.masteredCount=remote.masteredCount||{};state.firstMasteredDate=remote.firstMasteredDate||{};
-state.retired=remote.retired||{};state.todayCorrect=remote.todayCorrect||{};
-saveData(state);cloudStatus('已从云端恢复','ok');
+if(!remote||typeof remote!=='object')return false;
+// 智能合并：不是整体替换，而是逐字段合并
+const merged=mergeStates(state,remote);
+state.learned=merged.learned;state.mastered=merged.mastered;
+state.wrong=merged.wrong;state.stats=merged.stats;
+state.dayProgress=merged.dayProgress;state.recordingScores=merged.recordingScores;
+state.masteredCount=merged.masteredCount;state.firstMasteredDate=merged.firstMasteredDate;
+state.retired=merged.retired;state.todayCorrect=merged.todayCorrect;
+saveData(state);cloudStatus('已合并同步','ok');
 return true;
-}
-}catch(e){}
-return false;
+}catch(e){return false}
 }
 function scheduleCloudSync(){
 if(cloudTimer)clearTimeout(cloudTimer);
@@ -1386,7 +1486,9 @@ const syncParam=urlParams.get('sync');
 if(syncParam&&!cloudBlobId){cloudBlobId=syncParam;localStorage.setItem(CLOUD_BLOB_KEY,syncParam)}
 const loaded=await cloudLoad();
 renderDashboard();
-if(Object.keys(state.learned||{}).length>0){cloudSave()}
+// 如果有本地学习数据，延迟后上传合并结果到云端
+// 延迟是为了避免和 cloudLoad 的网络请求产生竞态
+if(Object.keys(state.learned||{}).length>0){setTimeout(()=>{cloudSave()},3000)}
 })();
 renderDashboard();
 </script>
