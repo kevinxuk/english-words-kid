@@ -854,11 +854,15 @@ function nextCard(){learnIdx++;if(learnIdx>=learnWords.length){learnWords=[];sho
 // Practice mode
 let practiceWord=null;
 function renderPractice(){
-const day=getPlanDay();
-const words=getNewWords(day).concat(getReviewWords(day));
-const candidates=words.filter(w=>!w.w.includes('...')&&!w.w.includes('/'));
-if(candidates.length===0){document.getElementById('view-practice').innerHTML='<div class="empty-state"><div class="icon">📭</div><p>暂无可练习的单词</p></div>';return}
-practiceWord=candidates[Math.floor(Math.random()*candidates.length)];
+// Only use words the child has already learned in learn mode (not new/unseen words)
+const candidates=VOCAB.filter(v=>state.learned[v.w]&&!state.retired[v.w]&&!v.w.includes('...')&&!v.w.includes('/'));
+if(candidates.length===0){document.getElementById('view-practice').innerHTML='<div class="empty-state"><div class="icon">📭</div><p>暂无可练习的单词</p><p style="color:#999;font-size:.85rem;margin-top:8px">请先在「学单词」中学习一些单词</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="showView(\'learn\')">去学单词</button></div></div>';return}
+// Prioritize wrong words, then least-mastered words
+let wrong=candidates.filter(v=>state.wrong[v.w]);
+let notWrong=candidates.filter(v=>!state.wrong[v.w]);
+notWrong.sort((a,b)=>(state.masteredCount[a.w]||0)-(state.masteredCount[b.w]||0));
+let pool=wrong.length>0?wrong.concat(notWrong):notWrong;
+practiceWord=pool[Math.floor(Math.random()*Math.min(pool.length,20))];
 let html='<div class="practice-box">'+
 '<p style="margin-bottom:16px;color:#888;font-size:.85rem">根据中文意思拼写英语单词</p>'+
 '<div class="prompt">'+practiceWord.m+'</div>';
@@ -898,15 +902,22 @@ function showHint(){const input=document.getElementById('spell-input');if(input&
 // Quiz mode
 let quizQuestions=[],quizIdx=0,quizScore=0,quizAnswered=false;
 function renderQuiz(){
-quizQuestions=[];const day=getPlanDay();const words=getNewWords(day).concat(getReviewWords(day));
-const candidates=words.filter(w=>w.w.length>0);
-for(let i=0;i<Math.min(10,candidates.length);i++){
-const w=candidates[Math.floor(Math.random()*candidates.length)];
+quizQuestions=[];
+// Only use words the child has already learned
+const candidates=VOCAB.filter(v=>state.learned[v.w]&&!state.retired[v.w]&&v.w.length>0);
+if(candidates.length<4){document.getElementById('view-quiz').innerHTML='<div class="empty-state"><div class="icon">📭</div><p>至少需要学过4个单词才能做题</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="showView(\'learn\')">去学单词</button></div></div>';return}
+// Prioritize wrong words
+let wrong=candidates.filter(v=>state.wrong[v.w]);
+let notWrong=candidates.filter(v=>!state.wrong[v.w]);
+let pool=wrong.length>0?wrong.concat(notWrong):candidates;
+let shuffled=seededShuffle(pool,getPlanDay()*13+5);
+for(let i=0;i<Math.min(10,shuffled.length);i++){
+const w=shuffled[i];
 if(quizQuestions.some(q=>q.word===w.w))continue;
-const type=Math.random()<0.5?'en2zh':'zh2en';
+const type='zh2en';
 const options=[w];
-const pool=VOCAB.filter(v=>v.w!==w.w&&!v.w.includes('...'));
-for(let j=0;j<3&&pool.length>0;j++){const idx=Math.floor(Math.random()*pool.length);if(!options.includes(pool[idx]))options.push(pool[idx]);pool.splice(idx,1)}
+const optPool=VOCAB.filter(v=>v.w!==w.w&&!v.w.includes('...'));
+for(let j=0;j<3&&optPool.length>0;j++){const idx=Math.floor(Math.random()*optPool.length);if(!options.includes(optPool[idx]))options.push(optPool[idx]);optPool.splice(idx,1)}
 options.sort(()=>Math.random()-0.5);
 quizQuestions.push({word:w,type,options})
 }
@@ -1109,6 +1120,35 @@ const badges=[
 ];
 badges.forEach(b=>{html+='<div class="badge'+(b.unlocked?'':' locked')+'"><div class="badge-icon">'+b.icon+'</div><div class="badge-name">'+b.name+'</div></div>'});
 html+='</div></div>';
+// Correct word records
+const correctWords=VOCAB.filter(v=>state.mastered[v.w]).sort((a,b)=>(state.masteredCount[b.w]||0)-(state.masteredCount[a.w]||0));
+html+='<div class="card-box"><h3 style="margin-bottom:12px">✅ 正确记录（'+correctWords.length+'个）</h3>';
+if(correctWords.length===0){html+='<p style="color:#888;font-size:.85rem">还没有答对过的单词，继续加油！</p>'}
+else{
+html+='<p style="color:#888;font-size:.85rem;margin-bottom:12px">以下是已答对的单词，数字表示答对次数</p>';
+html+='<div class="word-list">';
+correctWords.forEach(w=>{
+const mc=state.masteredCount[w.w]||0;
+const cls=mc>=2?'mastered':'learned';
+html+='<span class="word-tag '+cls+'" onclick="reviewProgressWord(\''+w.w.replace(/'/g,"\\'")+'\')">'+w.w+'<sup style="font-size:.65rem;margin-left:2px">'+mc+'</sup></span>';
+});
+html+='</div>';
+}
+html+='<div id="progress-word-detail"></div></div>';
+// Wrong word records
+const wrongWordList=VOCAB.filter(v=>state.wrong[v.w]);
+html+='<div class="card-box"><h3 style="margin-bottom:12px">❌ 错误记录（'+wrongWordList.length+'个）</h3>';
+if(wrongWordList.length===0){html+='<p style="color:#888;font-size:.85rem">没有错题，太棒了！</p>'}
+else{
+html+='<p style="color:#888;font-size:.85rem;margin-bottom:12px">点击单词可查看详情</p>';
+html+='<div class="word-list" style="margin-bottom:12px">';
+wrongWordList.forEach(w=>{
+html+='<span class="word-tag wrong" onclick="reviewProgressWord(\''+w.w.replace(/'/g,"\\'")+'\')">'+w.w+'</span>';
+});
+html+='</div>';
+html+='<div id="progress-wrong-detail"></div>';
+}
+html+='</div>';
 // Recording stats
 const allRecScores=state.recordingScores||{};
 const totalRecordings=Object.values(allRecScores).reduce((s,a)=>s+a.length,0);
@@ -1151,7 +1191,21 @@ const w=VOCAB.find(v=>v.w===word);if(!w)return;
 const el=document.getElementById('wrong-detail');
 el.innerHTML='<div class="card-box" style="margin-top:12px"><div style="font-size:1.5rem;font-weight:bold;color:var(--primary)">'+w.w+'</div>'+(w.p?'<div style="color:#888;margin:4px 0">'+w.p+'</div>':'')+'<div style="font-size:1.2rem;margin:8px 0">'+w.m+'</div><div style="color:#666;font-size:.9rem">'+w.e+'</div><div style="color:#999;font-size:.8rem;margin-top:4px">'+w.ez+'</div><div class="controls" style="margin-top:16px"><button class="btn btn-outline" onclick="speak(\''+w.w.replace(/'/g,"\\'")+'\')">🔊 发音</button><button class="btn btn-success" onclick="clearWrong(\''+w.w.replace(/'/g,"\\'")+'\')">✅ 已掌握</button></div></div>';
 }
-function clearWrong(word){delete state.wrong[word];state.mastered[word]=true;state.masteredCount[word]=(state.masteredCount[word]||0)+1;if(!state.firstMasteredDate[word])state.firstMasteredDate[word]=new Date().toISOString();if((state.masteredCount[word]||0)>=2)state.retired[word]=true;state.todayCorrect[getTodayStr()+'-'+word]=true;save();renderWrong()}
+function reviewProgressWord(word){
+const w=VOCAB.find(v=>v.w===word);if(!w)return;
+const mc=state.masteredCount[w.w]||0;
+const isWrong=!!state.wrong[w.w];
+const isMastered=!!state.mastered[w.w];
+const isRetired=!!state.retired[w.w];
+const el=document.getElementById('progress-word-detail')||document.getElementById('progress-wrong-detail');
+if(!el)return;
+let status='<span style="font-size:.8rem;color:#999;margin-left:8px">(';
+status+=isRetired?'已毕业':isMastered?('已掌握 '+mc+'/2'):'未掌握';
+if(isWrong)status+=' · 错题';
+status+=')</span>';
+el.innerHTML='<div class="card-box" style="margin-top:12px"><div style="font-size:1.5rem;font-weight:bold;color:var(--primary)">'+w.w+status+'</div>'+(w.p?'<div style="color:#888;margin:4px 0">'+w.p+'</div>':'')+'<div style="font-size:1.2rem;margin:8px 0">'+w.m+'</div><div style="color:#666;font-size:.9rem">'+w.e+'</div><div style="color:#999;font-size:.8rem;margin-top:4px">'+w.ez+'</div><div class="controls" style="margin-top:16px"><button class="btn btn-outline" onclick="speak(\''+w.w.replace(/'/g,"\\'")+'\')">🔊 发音</button></div></div>';
+}
+function clearWrong(word){delete state.wrong[word];state.mastered[word]=true;state.masteredCount[word]=(state.masteredCount[word]||0)+1;if(!state.firstMasteredDate[word])state.firstMasteredDate[word]=new Date().toISOString();if((state.masteredCount[word]||0)>=2)state.retired[word]=true;state.todayCorrect[getTodayStr()+'-'+word]=true;save();const activeView=document.querySelector('.view.active')?.id;if(activeView==='view-wrong')renderWrong();else if(activeView==='view-progress')renderProgress()}
 // ============= 数据导出/导入 =============
 function exportData(){
 const exportObj={
