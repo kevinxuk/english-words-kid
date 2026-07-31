@@ -504,6 +504,8 @@ const today=getTodayStr();
 let words=VOCAB.filter(v=>v.d===day&&!state.retired[v.w]);
 let nd=day+1;
 while(words.length===0&&nd<=53){words=VOCAB.filter(v=>v.d===nd&&!state.retired[v.w]);nd++}
+// Safety fallback: if all words are retired, return empty (will be handled by renderLearn)
+if(words.length===0)return[];
 // Prioritize words not yet marked correct today
 let notSeenToday=words.filter(v=>!state.todayCorrect[today+'-'+v.w]);
 let pool=notSeenToday.length>0?notSeenToday:words;
@@ -541,16 +543,33 @@ function checkRetiredStatus(){
 const now=new Date();
 let changed=false;
 Object.keys(state.mastered).forEach(word=>{
-if(state.retired[word])return;
 const count=state.masteredCount[word]||0;
 const first=state.firstMasteredDate[word];
-if(count>=2){state.retired[word]=true;changed=true;return}
-if(first){
+const isRetired=!!state.retired[word];
+// Graduate by count: 2 correct answers
+if(count>=2){
+if(!isRetired){state.retired[word]=true;changed=true}
+return
+}
+// Graduate by time: 2 days since first mastered (only if not wrong)
+// Only applies going forward — firstMasteredDate is set on explicit correct answers
+if(first&&!isRetired){
 const days=(now-new Date(first))/86400000;
-if(days>=1&&state.mastered[word]&&!state.wrong[word]){state.retired[word]=true;changed=true}
+if(days>=2&&state.mastered[word]&&!state.wrong[word]){state.retired[word]=true;changed=true;return}
+}
+// Fix: un-retire words with count<2 that were retired by old buggy 1-day threshold
+// (firstMasteredDate from migration is unreliable, so un-retire regardless of time)
+if(isRetired&&count<2){
+delete state.retired[word];changed=true
 }
 });
 if(changed)save()
+}
+function resetRetired(){
+state.retired={};
+save();
+learnIdx=0;
+renderLearn()
 }
 function getLearnedWords(){return VOCAB.filter(v=>state.learned[v.w])}
 function getMasteredWords(){return VOCAB.filter(v=>state.mastered[v.w])}
@@ -760,7 +779,16 @@ checkRetiredStatus();
 learnWords=getNewWords(day).concat(getReviewWords(day));
 if(learnIdx>=learnWords.length)learnIdx=0;
 learnFlipped=false;
-if(learnWords.length===0){document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🏆</div><h3>全部单词已掌握！</h3><p>太厉害了，所有单词都学会了！</p></div>';return}
+if(learnWords.length===0){
+const totalLearned=Object.keys(state.learned||{}).length;
+const retiredCount=Object.keys(state.retired||{}).length;
+if(totalLearned>=VOCAB.length){
+document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🏆</div><h3>全部单词已掌握！</h3><p>太厉害了，所有单词都学会了！</p></div>'
+}else{
+document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🔧</div><h3>单词列表为空</h3><p>已学 '+totalLearned+'/'+VOCAB.length+'，已毕业 '+retiredCount+' 个</p><p style="margin:12px 0;color:#999;font-size:.85rem">可能是毕业机制误判导致，点击下方按钮重置</p><div class="controls"><button class="btn btn-primary" onclick="resetRetired()">🔄 重置毕业状态</button></div></div>'
+}
+return
+}
 const w=learnWords[learnIdx];
 const mc=state.masteredCount[w.w]||0;
 let html='<div style="text-align:center;margin-bottom:12px"><span class="day-badge">第'+(learnIdx+1)+'/'+learnWords.length+'个</span>';
@@ -1485,6 +1513,7 @@ const urlParams=new URLSearchParams(window.location.search);
 const syncParam=urlParams.get('sync');
 if(syncParam&&!cloudBlobId){cloudBlobId=syncParam;localStorage.setItem(CLOUD_BLOB_KEY,syncParam)}
 const loaded=await cloudLoad();
+checkRetiredStatus();
 renderDashboard();
 // 如果有本地学习数据，延迟后上传合并结果到云端
 // 延迟是为了避免和 cloudLoad 的网络请求产生竞态
