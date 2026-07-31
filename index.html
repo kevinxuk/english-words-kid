@@ -775,8 +775,11 @@ document.getElementById('view-dashboard').innerHTML=html;
 let learnIdx=0,learnWords=[],learnFlipped=false;
 function renderLearn(){
 const day=getPlanDay();
+// Only rebuild word list when starting fresh (not mid-session)
+if(learnWords.length===0){
 checkRetiredStatus();
 learnWords=getNewWords(day).concat(getReviewWords(day));
+}
 if(learnIdx>=learnWords.length)learnIdx=0;
 learnFlipped=false;
 if(learnWords.length===0){
@@ -789,6 +792,10 @@ document.getElementById('view-learn').innerHTML='<div class="empty-state"><div c
 }
 return
 }
+renderLearnCard()}
+function renderLearnCard(){
+if(learnWords.length===0)return;
+if(learnIdx>=learnWords.length)learnIdx=0;
 const w=learnWords[learnIdx];
 const mc=state.masteredCount[w.w]||0;
 let html='<div style="text-align:center;margin-bottom:12px"><span class="day-badge">第'+(learnIdx+1)+'/'+learnWords.length+'个</span>';
@@ -842,7 +849,7 @@ state.masteredCount[w]=0;delete state.firstMasteredDate[w];delete state.retired[
 delete state.todayCorrect[getTodayStr()+'-'+w];
 save()}
 nextCard()}
-function nextCard(){learnIdx++;if(learnIdx>=learnWords.length){showConfetti();document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🎉</div><h3>太棒了！</h3><p>本组单词学习完成！</p><div class="controls" style="margin-top:20px"><button class="btn btn-primary" onclick="learnIdx=0;renderLearn()">再学一遍</button><button class="btn btn-outline" onclick="showView(\'dashboard\')">返回首页</button></div></div>'}else{renderLearn()}}
+function nextCard(){learnIdx++;if(learnIdx>=learnWords.length){learnWords=[];showConfetti();document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🎉</div><h3>太棒了！</h3><p>本组单词学习完成！</p><div class="controls" style="margin-top:20px"><button class="btn btn-primary" onclick="learnIdx=0;renderLearn()">再学一遍</button><button class="btn btn-outline" onclick="showView(\'dashboard\')">返回首页</button></div></div>'}else{renderLearnCard()}}
 // Practice mode
 let practiceWord=null;
 function renderPractice(){
