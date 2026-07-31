@@ -751,7 +751,8 @@ html+='<div class="card-box"><h3 style="margin-bottom:12px">🎮 开始学习</h
 html+='<div class="backup-card" style="background:linear-gradient(135deg,#f6ffed,#e6fffb);border:1px solid #b7eb8f"><h3>☁️ 自动云同步（免配置）</h3>';
 if(cloudBlobId){
 html+='<p style="font-size:.85rem;color:#666;margin-bottom:8px">✅ 已开启自动同步，每次学习自动上传到云端</p>';
-html+='<p style="font-size:.8rem;color:#999;margin-bottom:8px">同步码：'+cloudBlobId.substring(0,13)+'...</p>';
+html+='<p style="font-size:.8rem;color:#999;margin-bottom:4px">同步码：'+cloudBlobId.substring(0,13)+'...</p>';
+html+='<p style="font-size:.75rem;color:#fa8c16;margin-bottom:8px">⚠️ 免费云端数据24小时后过期，请尽快在新设备上打开同步链接</p>';
 html+='<div class="backup-btns"><button class="btn btn-success" onclick="copySyncLink()">🔗 复制同步链接</button><button class="btn btn-outline" onclick="cloudSave()">⬆️ 立即同步</button></div>';
 }else{
 html+='<p style="font-size:.85rem;color:#666;margin-bottom:8px">学习几个单词后会自动创建云端备份。换设备时用同步链接恢复进度。</p>';
@@ -1481,46 +1482,68 @@ const color=colors[type]||'#999';
 const el=document.getElementById('cloud-status');if(el){el.textContent=text;el.style.color=color}
 const fl=document.getElementById('float-sync');if(fl){fl.textContent=text;fl.style.color=color;if(type==='ok'){setTimeout(()=>{if(fl)fl.style.opacity='0.4'},3000);fl.style.opacity='1'}else{fl.style.opacity='1'}}
 }
+// Fetch with timeout — prevents hanging on slow/blocked networks
+function fetchWithTimeout(url,options,timeoutMs){
+const ms=timeoutMs||15000;
+if(typeof AbortController==='undefined')return fetch(url,options);
+const controller=new AbortController();
+const timer=setTimeout(()=>controller.abort(),ms);
+return fetch(url,Object.assign({},options,{signal:controller.signal})).finally(()=>{clearTimeout(timer)})
+}
 async function cloudSave(){
 if(cloudSyncing)return;
 cloudSyncing=true;cloudStatus('同步中...','sync');
 try{
 if(cloudBlobId){
-// 先拉取云端数据，合并后再上传
-const getResp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{headers:{'Accept':'application/json'}});
-if(getResp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);cloudSyncing=false;return cloudSave()}
+// Try to fetch remote for merging — but don't let GET failure block upload
+let mergedOK=false;
+try{
+const getResp=await fetchWithTimeout('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{headers:{'Accept':'application/json'}});
+if(getResp.status===404){
+// Blob expired (24h limit) — create new one
+cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);
+cloudSyncing=false;return cloudSave()
+}
 if(getResp.ok){
 const remote=await getResp.json();
 if(remote&&typeof remote==='object'){
-// 合并本地和云端数据
-const merged=mergeStates(state,remote);
-// 更新本地状态为合并结果
-state.learned=merged.learned;state.mastered=merged.mastered;
-state.wrong=merged.wrong;state.stats=merged.stats;
-state.dayProgress=merged.dayProgress;state.recordingScores=merged.recordingScores;
-state.masteredCount=merged.masteredCount;state.firstMasteredDate=merged.firstMasteredDate;
-state.retired=merged.retired;state.todayCorrect=merged.todayCorrect;
-saveData(state)
+const m=mergeStates(state,remote);
+state.learned=m.learned;state.mastered=m.mastered;
+state.wrong=m.wrong;state.stats=m.stats;
+state.dayProgress=m.dayProgress;state.recordingScores=m.recordingScores;
+state.masteredCount=m.masteredCount;state.firstMasteredDate=m.firstMasteredDate;
+state.retired=m.retired;state.todayCorrect=m.todayCorrect;
+saveData(state);mergedOK=true
 }
 }
-// 上传合并后的数据
+}catch(getErr){
+// GET failed (timeout/network) — still upload local data without merge
+}
+// Upload (merged or local) data
 const data=JSON.stringify(state);
-const resp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{method:'PUT',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
-if(!resp.ok)throw new Error(resp.status);
-cloudStatus('已同步','ok');updateSyncUrl();
+const resp=await fetchWithTimeout('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{method:'PUT',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
+if(!resp.ok)throw new Error('PUT '+resp.status);
+cloudStatus(mergedOK?'已同步':'已同步(仅本地)','ok');updateSyncUrl();
 }else{
-// 首次创建：直接上传本地数据
+// First time: create new blob
 const data=JSON.stringify(state);
-const resp=await fetch('https://jsonblob.com/api/jsonBlob',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
+const resp=await fetchWithTimeout('https://jsonblob.com/api/jsonBlob',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:data});
 if(resp.ok){
 const loc=resp.headers.get('Location')||'';
 const xid=resp.headers.get('X-jsonblob-id')||'';
 const id=xid||loc.split('/').pop();
 if(id){cloudBlobId=id;localStorage.setItem(CLOUD_BLOB_KEY,id);cloudStatus('已同步','ok');updateSyncUrl()}
+else throw new Error('No blob ID in response')
 }
-else throw new Error(resp.status);
+else throw new Error('POST '+resp.status);
 }
-}catch(e){cloudStatus('同步失败','err')}
+}catch(e){
+cloudStatus('同步失败','err');
+// Retry once after 5s on network/timeout errors (not on 404 or expired)
+if(!String(e.message).includes('404')&&!String(e.message).includes('No blob')){
+setTimeout(()=>{if(!cloudSyncing)cloudSave()},5000)
+}
+}
 cloudSyncing=false;
 }
 function updateSyncUrl(){
@@ -1532,7 +1555,8 @@ history.replaceState(null,'',url);
 function copySyncLink(){
 if(!cloudBlobId){alert('请先学习几个单词，同步会自动创建');return}
 const link=window.location.origin+window.location.pathname+'?sync='+cloudBlobId;
-if(navigator.clipboard){navigator.clipboard.writeText(link).then(()=>alert('✅ 同步链接已复制！\n\n在新设备浏览器中打开此链接即可恢复学习进度：\n'+link))}
+const msg='✅ 同步链接已复制！\n\n在新设备浏览器中打开此链接即可恢复学习进度：\n'+link+'\n\n⚠️ 注意：免费云端数据24小时后自动过期，请尽快在新设备上打开。';
+if(navigator.clipboard){navigator.clipboard.writeText(link).then(()=>alert(msg))}
 else{prompt('复制以下链接，在新设备浏览器中打开：',link)}
 }
 async function enterSyncCode(){
@@ -1540,18 +1564,20 @@ const input=document.getElementById('sync-code-input');
 const code=(input?.value||'').trim();
 if(!code){alert('请输入同步码');return}
 cloudBlobId=code;localStorage.setItem(CLOUD_BLOB_KEY,code);
-const ok=await cloudLoad();
-if(ok){alert('✅ 进度已从云端恢复！');showView('dashboard')}
-else{alert('❌ 未找到云端数据，请检查同步码是否正确，或原设备是否已同步')}
+const result=await cloudLoad();
+if(result===true){alert('✅ 进度已从云端恢复！');showView('dashboard')}
+else if(result==='expired'){alert('❌ 云端数据已过期！\n\njsonblob.com 免费服务的数据24小时后自动删除。\n请回到原设备重新学习几个单词，系统会自动创建新的同步链接。')}
+else if(result==='notfound'){alert('❌ 未找到云端数据\n\n请检查同步码是否正确，或原设备是否已同步。')}
+else{alert('❌ 同步失败\n\n可能原因：\n1. 网络连接不稳定\n2. jsonblob.com 服务暂时不可用\n3. 云端数据已过期（24小时限制）\n\n请稍后重试，或在原设备重新同步。')}
 }
 async function cloudLoad(){
 if(!cloudBlobId)return false;
 try{
-const resp=await fetch('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{headers:{'Accept':'application/json'}});
-if(resp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);return false}
-if(!resp.ok)return false;
+const resp=await fetchWithTimeout('https://jsonblob.com/api/jsonBlob/'+cloudBlobId,{headers:{'Accept':'application/json'}});
+if(resp.status===404){cloudBlobId=null;localStorage.removeItem(CLOUD_BLOB_KEY);cloudStatus('云端数据已过期','err');return'expired'}
+if(!resp.ok){cloudStatus('云端读取失败','err');return'notfound'}
 const remote=await resp.json();
-if(!remote||typeof remote!=='object')return false;
+if(!remote||typeof remote!=='object'){return'notfound'}
 // 智能合并：不是整体替换，而是逐字段合并
 const merged=mergeStates(state,remote);
 state.learned=merged.learned;state.mastered=merged.mastered;
@@ -1561,7 +1587,11 @@ state.masteredCount=merged.masteredCount;state.firstMasteredDate=merged.firstMas
 state.retired=merged.retired;state.todayCorrect=merged.todayCorrect;
 saveData(state);cloudStatus('已合并同步','ok');
 return true;
-}catch(e){return false}
+}catch(e){
+const errName=e.name||'';
+if(errName==='AbortError'){cloudStatus('同步超时','err');return'timeout'}
+cloudStatus('同步失败','err');return'network'
+}
 }
 function scheduleCloudSync(){
 if(cloudTimer)clearTimeout(cloudTimer);
@@ -1577,8 +1607,14 @@ if(syncParam&&!cloudBlobId){cloudBlobId=syncParam;localStorage.setItem(CLOUD_BLO
 const loaded=await cloudLoad();
 checkRetiredStatus();
 renderDashboard();
+// Show sync failure feedback when opening sync link on new device
+if(syncParam&&loaded!==true){
+setTimeout(()=>{
+if(loaded==='expired'){alert('⚠️ 云端数据已过期！\n\njsonblob.com 免费服务的数据24小时后自动删除。\n请回到原设备重新学习几个单词，系统会自动创建新的同步链接。')}
+else if(loaded==='timeout'||loaded==='network'){alert('⚠️ 云端同步失败\n\n可能是网络问题，请检查网络后重试。')}
+},500)
+}
 // 如果有本地学习数据，延迟后上传合并结果到云端
-// 延迟是为了避免和 cloudLoad 的网络请求产生竞态
 if(Object.keys(state.learned||{}).length>0){setTimeout(()=>{cloudSave()},3000)}
 })();
 renderDashboard();
