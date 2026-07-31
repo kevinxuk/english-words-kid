@@ -501,10 +501,12 @@ function seededRandom(seed){let s=seed;return function(){s=(s*9301+49297)%233280
 function seededShuffle(arr,seed){const rng=seededRandom(seed);const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function getNewWords(day){
 const today=getTodayStr();
-let words=VOCAB.filter(v=>v.d===day&&!state.retired[v.w]);
-let nd=day+1;
-while(words.length===0&&nd<=53){words=VOCAB.filter(v=>v.d===nd&&!state.retired[v.w]);nd++}
-// Safety fallback: if all words are retired, return empty (will be handled by renderLearn)
+// Collect unlearned, non-retired words from current day forward
+let words=VOCAB.filter(v=>v.d>=day&&!state.retired[v.w]&&!state.learned[v.w]);
+// Fallback: if no unlearned words from current day forward, look at ALL unlearned words
+if(words.length===0){
+words=VOCAB.filter(v=>!state.retired[v.w]&&!state.learned[v.w]);
+}
 if(words.length===0)return[];
 // Prioritize words not yet marked correct today
 let notSeenToday=words.filter(v=>!state.todayCorrect[today+'-'+v.w]);
@@ -542,26 +544,24 @@ return result;
 function checkRetiredStatus(){
 const now=new Date();
 let changed=false;
+// Compute shouldRetire for each mastered word, then apply once (no oscillation)
 Object.keys(state.mastered).forEach(word=>{
 const count=state.masteredCount[word]||0;
 const first=state.firstMasteredDate[word];
 const isRetired=!!state.retired[word];
-// Graduate by count: 2 correct answers
+let shouldRetire=false;
 if(count>=2){
-if(!isRetired){state.retired[word]=true;changed=true}
-return
-}
-// Graduate by time: 2 days since first mastered (only if not wrong)
-// Only applies going forward — firstMasteredDate is set on explicit correct answers
-if(first&&!isRetired){
+shouldRetire=true
+}else if(first&&state.mastered[word]&&!state.wrong[word]){
 const days=(now-new Date(first))/86400000;
-if(days>=2&&state.mastered[word]&&!state.wrong[word]){state.retired[word]=true;changed=true;return}
+if(days>=2)shouldRetire=true
 }
-// Fix: un-retire words with count<2 that were retired by old buggy 1-day threshold
-// (firstMasteredDate from migration is unreliable, so un-retire regardless of time)
-if(isRetired&&count<2){
-delete state.retired[word];changed=true
-}
+if(shouldRetire&&!isRetired){state.retired[word]=true;changed=true}
+else if(!shouldRetire&&isRetired){delete state.retired[word];changed=true}
+});
+// Clean up orphaned retired entries (retired but not mastered — from sync bugs or old data)
+Object.keys(state.retired||{}).forEach(word=>{
+if(!state.mastered[word]){delete state.retired[word];changed=true}
 });
 if(changed)save()
 }
@@ -708,6 +708,7 @@ const render={dashboard:renderDashboard,learn:renderLearn,practice:renderPractic
 if(render[name])render[name]();
 }
 function renderDashboard(){
+checkRetiredStatus();
 const day=getPlanDay();const newWords=getNewWords(day);const reviewWords=getReviewWords(day);
 const total=VOCAB.length;const learned=getLearnedWords().length;const mastered=getMasteredWords().length;
 const wrongCount=getWrongWords().length;
