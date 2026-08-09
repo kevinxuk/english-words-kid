@@ -495,6 +495,11 @@ const learnedCount=Object.keys(state.learned||{}).length;
 const retiredCount=Object.keys(state.retired||{}).length;
 if(learnedCount>0 && retiredCount>=learnedCount){
 state.retired={};
+// 同时重置掌握时间，避免一加载又被 checkRetiredStatus 重新全量退休
+Object.keys(state.mastered||{}).forEach(w=>{
+state.firstMasteredDate[w]=new Date().toISOString();
+state.lastReviewed[w]=new Date().toISOString();
+});
 }
 // Migrate firstMasteredDate to lastReviewed for existing data
 Object.keys(state.firstMasteredDate||{}).forEach(w=>{
@@ -588,14 +593,23 @@ Object.keys(state.retired||{}).forEach(word=>{
 if(state.wrong[word]){delete state.retired[word];changed=true}
 });
 // Compute shouldRetire for each mastered word, then apply once (no oscillation)
-// 退休条件：掌握后连续2天未答错（通过 firstMasteredDate 判断）
+// 退休条件：掌握后，根据 lastReviewed 判断是否长时间未巩固
+// 错题词、已退休巩固词（14天）、普通掌握词（7天）分级间隔
 Object.keys(state.mastered).forEach(word=>{
-const first=state.firstMasteredDate[word];
+const lr=state.lastReviewed[word];
 const isRetired=!!state.retired[word];
 let shouldRetire=false;
-if(first&&state.mastered[word]&&!state.wrong[word]){
-const days=(now-new Date(first))/86400000;
-if(days>=2)shouldRetire=true
+if(state.mastered[word]&&!state.wrong[word]){
+if(lr){
+const days=(now-new Date(lr))/86400000;
+const mc=state.masteredCount[word]||0;
+// 已退休巩固词：14天未复习则保持退休；未退休词：7天未复习则退休
+const threshold=isRetired?14:mc>=3?7:999;
+if(days>=threshold)shouldRetire=true
+}else if(isRetired){
+// 已退休但无 lastReviewed 记录，保守处理：保持退休
+shouldRetire=true
+}
 }
 if(shouldRetire&&!isRetired){state.retired[word]=true;changed=true}
 else if(!shouldRetire&&isRetired){delete state.retired[word];changed=true}
