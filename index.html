@@ -514,16 +514,16 @@ function seededRandom(seed){let s=seed;return function(){s=(s*9301+49297)%233280
 function seededShuffle(arr,seed){const rng=seededRandom(seed);const a=[...arr];for(let i=a.length-1;i>0;i--){const j=Math.floor(rng()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
 function getNewWords(day){
 const today=getTodayStr();
-// 1. 优先取当前天数之后的未学单词
-let newWords=VOCAB.filter(v=>v.d>=day&&!state.retired[v.w]&&!state.learned[v.w]);
+// 1. 优先取当前天数之后的未学单词（毕业词不再作为新词，只在复习中巩固）
+let newWords=VOCAB.filter(v=>v.d>=day&&!state.learned[v.w]);
 // 2. 兜底：取所有未学单词
 if(newWords.length===0){
-newWords=VOCAB.filter(v=>!state.retired[v.w]&&!state.learned[v.w]);
+newWords=VOCAB.filter(v=>!state.learned[v.w]);
 }
 // 3. 限制每日新词最多5个
 let result=seededShuffle(newWords,day*11+7);
 if(result.length>5)result=result.slice(0,5);
-// 4. 如果新词不足5个，用复习词填补
+// 4. 如果新词不足5个，用复习词填补（复习词包含退休巩固词）
 let fillCount=5-result.length;
 if(fillCount>0){
 let reviewWords=getReviewWords(day);
@@ -535,29 +535,33 @@ return result;
 }
 function getReviewWords(day){
 const today=getTodayStr();
-// 1. 候选池：所有已学且未退休的单词（不限计划日）
-let candidates=VOCAB.filter(v=>state.learned[v.w]&&!state.retired[v.w]);
+// 1. 候选池：所有已学单词（包含已退休的毕业词，作为巩固复习）
+let candidates=VOCAB.filter(v=>state.learned[v.w]);
 if(candidates.length===0)return[];
-// 2. 遗忘曲线：根据 masteredCount 决定复习间隔
+// 2. 遗忘曲线：根据状态决定复习间隔
 function getReviewInterval(w){
 const mc=state.masteredCount[w.w]||0;
-if(mc<=1)return 1;
-if(mc===2)return 3;
-return 7;
+const isRetired=!!state.retired[w.w];
+if(state.wrong[w.w])return 1; // 错题词：1天
+if(isRetired)return 14; // 已退休毕业词：14天巩固一次
+if(mc<=1)return 1; // 掌握1次：1天
+if(mc===2)return 3; // 掌握2次：3天
+return 7; // 掌握3次+：7天
 }
 function daysSinceLastReview(w){
 const lr=state.lastReviewed[w.w];
 if(!lr)return 999;
 return Math.floor((Date.now()-new Date(lr))/86400000);
 }
-// 3. 按遗忘曲线筛选：到期词 + 错题词（错题词不等待间隔，始终优先）
+// 3. 按遗忘曲线筛选到期词
 let dueWords=candidates.filter(v=>daysSinceLastReview(v)>=getReviewInterval(v));
+// 4. 错题词不受间隔限制，始终优先
 let wrongWords=candidates.filter(v=>state.wrong[v.w]);
 let reviewPool=wrongWords.length>0?wrongWords:dueWords;
-// 4. 已答对的今日词排后（但 wrong 词即使今日已答对也保留在前）
+// 5. 已答对的今日词排后
 let seenToday=reviewPool.filter(v=>state.todayCorrect[today+'-'+v.w]);
 let notSeenToday=reviewPool.filter(v=>!state.todayCorrect[today+'-'+v.w]);
-// 5. wrong 词始终优先，未错词按掌握次数升序（最少掌握的排前面）
+// 6. wrong 词始终优先，未错词按掌握次数升序
 let wWrong=notSeenToday.filter(v=>state.wrong[v.w]);
 let wNotWrong=notSeenToday.filter(v=>!state.wrong[v.w]);
 wNotWrong.sort((a,b)=>(state.masteredCount[a.w]||0)-(state.masteredCount[b.w]||0));
@@ -567,10 +571,10 @@ let sWrong=seenToday.filter(v=>state.wrong[v.w]);
 let sNotWrong=seenToday.filter(v=>!state.wrong[v.w]);
 sNotWrong.sort((a,b)=>(state.masteredCount[a.w]||0)-(state.masteredCount[b.w]||0));
 ordered=ordered.concat(seededShuffle(sWrong,day*5+3),seededShuffle(sNotWrong,day*9+17));
-// 6. 每日数量上限
+// 7. 每日数量上限
 let count=day<=38?20:day<=45?15:5;
 if(ordered.length<=count)return ordered;
-// 7. 按天轮转，每天看到不同的子集
+// 8. 按天轮转，每天看到不同的子集
 let offset=(day*3)%ordered.length;
 let result=[];
 for(let i=0;i<count;i++){result.push(ordered[(offset+i)%ordered.length])}
@@ -764,7 +768,7 @@ let html='<div class="card-box">'+
 '<div class="stat-item"><div class="num warning">'+wrongCount+'</div><div class="label">错题</div></div>'+
 '<div class="stat-item"><div class="num">'+accuracy+'%</div><div class="label">正确率</div></div>'+
 '<div class="stat-item"><div class="num warning">'+getTotalRecordings()+'</div><div class="label">朗读次数</div></div>'+
-'<div class="stat-item"><div class="num" style="color:#722ed1">'+Object.keys(state.retired||{}).length+'</div><div class="label">已毕业</div></div>'+
+'<div class="stat-item"><div class="num" style="color:#722ed1">'+Object.keys(state.retired||{}).length+'</div><div class="label">已巩固</div></div>'+
 '</div>'+
 '<div class="progress-bar"><div class="progress-fill" style="width:'+Math.round(learned/total*100)+'%"></div></div>'+
 '<p style="text-align:center;font-size:.85rem;color:#888">学习进度：'+learned+'/'+total+' ('+Math.round(learned/total*100)+'%)</p>'+
@@ -1142,12 +1146,12 @@ let html='<div class="card-box"><h3 style="margin-bottom:12px">📊 学习统计
 '<div class="stat-item"><div class="num">'+learned+'</div><div class="label">已学单词</div></div>'+
 '<div class="stat-item"><div class="num success">'+mastered+'</div><div class="label">已掌握</div></div>'+
 '<div class="stat-item"><div class="num warning">'+wrongCount+'</div><div class="label">错题数</div></div>'+
-'<div class="stat-item"><div class="num" style="color:#722ed1">'+Object.keys(state.retired||{}).length+'</div><div class="label">已毕业</div></div>'+
+'<div class="stat-item"><div class="num" style="color:#722ed1">'+Object.keys(state.retired||{}).length+'</div><div class="label">已巩固</div></div>'+
 '</div>';
 const retiredCount=Object.keys(state.retired||{}).length;
 html+='<div style="margin-top:12px"><div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:4px"><span>总进度</span><span>'+learned+'/'+total+'</span></div><div class="progress-bar"><div class="progress-fill" style="width:'+Math.round(learned/total*100)+'%"></div></div></div>';
 html+='<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:4px"><span>掌握率</span><span>'+mastered+'/'+total+'</span></div><div class="progress-bar"><div class="progress-fill" style="width:'+Math.round(mastered/total*100)+'%;background:linear-gradient(90deg,#52c41a,#389e0c)"></div></div></div>';
-html+='<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:4px"><span>毕业率（彻底掌握）</span><span>'+retiredCount+'/'+total+'</span></div><div class="progress-bar"><div class="progress-fill" style="width:'+Math.round(retiredCount/Math.max(1,total)*100)+'%;background:linear-gradient(90deg,#722ed1,#9254de)"></div></div></div>';
+html+='<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:4px"><span>巩固率（长期记忆）</span><span>'+retiredCount+'/'+total+'</span></div><div class="progress-bar"><div class="progress-fill" style="width:'+Math.round(retiredCount/Math.max(1,total)*100)+'%;background:linear-gradient(90deg,#722ed1,#9254de)"></div></div></div>';
 html+='</div>';
 // Comprehensive understanding ability
 const learnRate=state.modeStats.learn.total>0?Math.round(state.modeStats.learn.correct/state.modeStats.learn.total*100):0;
