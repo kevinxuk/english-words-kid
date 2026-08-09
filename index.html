@@ -918,8 +918,8 @@ function nextCard(){learnIdx++;if(learnIdx>=learnWords.length){learnWords=[];sho
 // Practice mode
 let practiceWord=null;
 function renderPractice(){
-// Only use words the child has already learned in learn mode (not new/unseen words)
-const candidates=VOCAB.filter(v=>state.learned[v.w]&&!state.retired[v.w]&&!v.w.includes('...')&&!v.w.includes('/'));
+// Only use words the child has already learned in learn mode (including retired words for review)
+const candidates=VOCAB.filter(v=>state.learned[v.w]&&!v.w.includes('...')&&!v.w.includes('/'));
 if(candidates.length===0){document.getElementById('view-practice').innerHTML='<div class="empty-state"><div class="icon">📭</div><p>暂无可练习的单词</p><p style="color:#999;font-size:.85rem;margin-top:8px">请先在「学单词」中学习一些单词</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="showView(\'learn\')">去学单词</button></div></div>';return}
 // Prioritize wrong words, then least-mastered words
 let wrong=candidates.filter(v=>state.wrong[v.w]);
@@ -955,7 +955,7 @@ input.classList.add('correct');feedback.className='feedback show success';feedba
 state.learned[practiceWord.w]=true;state.mastered[practiceWord.w]=true;delete state.wrong[practiceWord.w];
 state.masteredCount[practiceWord.w]=(state.masteredCount[practiceWord.w]||0)+1;
 if(!state.firstMasteredDate[practiceWord.w])state.firstMasteredDate[practiceWord.w]=new Date().toISOString();
-if((state.masteredCount[practiceWord.w]||0)>=2)state.retired[practiceWord.w]=true;
+// 退休由 checkRetiredStatus() 根据时间条件统一判断，不在此处立即退休
 state.todayCorrect[getTodayStr()+'-'+practiceWord.w]=true;
 state.lastReviewed[practiceWord.w]=new Date().toISOString();
 state.stats.totalAnswered++;state.stats.correct++;
@@ -974,8 +974,8 @@ function showHint(){const input=document.getElementById('spell-input');if(input&
 let quizQuestions=[],quizIdx=0,quizScore=0,quizAnswered=false;
 function renderQuiz(){
 quizQuestions=[];
-// Only use words the child has already learned
-const candidates=VOCAB.filter(v=>state.learned[v.w]&&!state.retired[v.w]&&v.w.length>0);
+// Only use words the child has already learned (including retired words for review)
+const candidates=VOCAB.filter(v=>state.learned[v.w]&&v.w.length>0);
 if(candidates.length<4){document.getElementById('view-quiz').innerHTML='<div class="empty-state"><div class="icon">📭</div><p>至少需要学过4个单词才能做题</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="showView(\'learn\')">去学单词</button></div></div>';return}
 // Prioritize wrong words
 let wrong=candidates.filter(v=>state.wrong[v.w]);
@@ -1024,7 +1024,7 @@ const options=document.querySelectorAll('.quiz-option');
 options.forEach((opt,i)=>{if(i===correctIdx)opt.classList.add('correct');if(i===selectedIdx&&i!==correctIdx)opt.classList.add('wrong')});
 state.stats.totalAnswered++;
 state.modeStats.quiz.total=(state.modeStats.quiz.total||0)+1;
-if(selectedIdx===correctIdx){quizScore++;state.stats.correct++;state.learned[q.word.w]=true;state.mastered[q.word.w]=true;delete state.wrong[q.word.w];state.masteredCount[q.word.w]=(state.masteredCount[q.word.w]||0)+1;if(!state.firstMasteredDate[q.word.w])state.firstMasteredDate[q.word.w]=new Date().toISOString();if((state.masteredCount[q.word.w]||0)>=2)state.retired[q.word.w]=true;state.todayCorrect[getTodayStr()+'-'+q.word.w]=true;
+if(selectedIdx===correctIdx){quizScore++;state.stats.correct++;state.learned[q.word.w]=true;state.mastered[q.word.w]=true;delete state.wrong[q.word.w];state.masteredCount[q.word.w]=(state.masteredCount[q.word.w]||0)+1;if(!state.firstMasteredDate[q.word.w])state.firstMasteredDate[q.word.w]=new Date().toISOString();state.todayCorrect[getTodayStr()+'-'+q.word.w]=true;
 state.lastReviewed[q.word.w]=new Date().toISOString();
 state.modeStats.quiz.correct=(state.modeStats.quiz.correct||0)+1;
 }else{state.wrong[q.word.w]=true;state.learned[q.word.w]=true;delete state.todayCorrect[getTodayStr()+'-'+q.word.w];
@@ -1116,7 +1116,7 @@ else{input.classList.add('wrong');fb.className='feedback show error';fb.innerHTM
 }
 state.stats.totalAnswered++;
 state.modeStats.quiz.total=(state.modeStats.quiz.total||0)+1;
-if(correct){examScore++;state.stats.correct++;state.mastered[q.word.w]=true;delete state.wrong[q.word.w];state.masteredCount[q.word.w]=(state.masteredCount[q.word.w]||0)+1;if(!state.firstMasteredDate[q.word.w])state.firstMasteredDate[q.word.w]=new Date().toISOString();if((state.masteredCount[q.word.w]||0)>=2)state.retired[q.word.w]=true;state.todayCorrect[getTodayStr()+'-'+q.word.w]=true;
+if(correct){examScore++;state.stats.correct++;state.mastered[q.word.w]=true;delete state.wrong[q.word.w];state.masteredCount[q.word.w]=(state.masteredCount[q.word.w]||0)+1;if(!state.firstMasteredDate[q.word.w])state.firstMasteredDate[q.word.w]=new Date().toISOString();state.todayCorrect[getTodayStr()+'-'+q.word.w]=true;
 state.lastReviewed[q.word.w]=new Date().toISOString();
 state.modeStats.quiz.correct=(state.modeStats.quiz.correct||0)+1;
 }else{state.wrong[q.word.w]=true;delete state.todayCorrect[getTodayStr()+'-'+q.word.w];
@@ -1311,7 +1311,7 @@ if(isWrong)status+=' · 错题';
 status+=')</span>';
 el.innerHTML='<div class="card-box" style="margin-top:12px"><div style="font-size:1.5rem;font-weight:bold;color:var(--primary)">'+w.w+status+'</div>'+(w.p?'<div style="color:#888;margin:4px 0">'+w.p+'</div>':'')+'<div style="font-size:1.2rem;margin:8px 0">'+w.m+'</div><div style="color:#666;font-size:.9rem">'+w.e+'</div><div style="color:#999;font-size:.8rem;margin-top:4px">'+w.ez+'</div><div class="controls" style="margin-top:16px"><button class="btn btn-outline" onclick="speak(\''+w.w.replace(/'/g,"\\'")+'\')">🔊 发音</button></div></div>';
 }
-function clearWrong(word){delete state.wrong[word];state.mastered[word]=true;state.masteredCount[word]=(state.masteredCount[word]||0)+1;if(!state.firstMasteredDate[word])state.firstMasteredDate[word]=new Date().toISOString();if((state.masteredCount[word]||0)>=2)state.retired[word]=true;state.todayCorrect[getTodayStr()+'-'+word]=true;save();const activeView=document.querySelector('.view.active')?.id;if(activeView==='view-wrong')renderWrong();else if(activeView==='view-progress')renderProgress()}
+function clearWrong(word){delete state.wrong[word];state.mastered[word]=true;state.masteredCount[word]=(state.masteredCount[word]||0)+1;if(!state.firstMasteredDate[word])state.firstMasteredDate[word]=new Date().toISOString();state.todayCorrect[getTodayStr()+'-'+word]=true;save();const activeView=document.querySelector('.view.active')?.id;if(activeView==='view-wrong')renderWrong();else if(activeView==='view-progress')renderProgress()}
 // ============= 数据导出/导入 =============
 function exportData(){
 const exportObj={
