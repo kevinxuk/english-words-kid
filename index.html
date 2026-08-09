@@ -489,6 +489,13 @@ if(!state.modeStats)state.modeStats={learn:{total:0,correct:0},practice:{total:0
 Object.keys(state.mastered).forEach(w=>{
 if(!state.masteredCount[w]){state.masteredCount[w]=1;state.firstMasteredDate[w]=new Date().toISOString()}
 });
+// Safety: if retired count >= learned count, the retirement mechanism may have been too aggressive
+// Auto-reset to prevent empty learn pool
+const learnedCount=Object.keys(state.learned||{}).length;
+const retiredCount=Object.keys(state.retired||{}).length;
+if(learnedCount>0 && retiredCount>=learnedCount){
+state.retired={};
+}
 // Migrate firstMasteredDate to lastReviewed for existing data
 Object.keys(state.firstMasteredDate||{}).forEach(w=>{
 if(!state.lastReviewed[w])state.lastReviewed[w]=state.firstMasteredDate[w];
@@ -572,15 +579,17 @@ return result;
 function checkRetiredStatus(){
 const now=new Date();
 let changed=false;
+// Un-retire words that are currently in wrong state — they are not continuously mastered
+Object.keys(state.retired||{}).forEach(word=>{
+if(state.wrong[word]){delete state.retired[word];changed=true}
+});
 // Compute shouldRetire for each mastered word, then apply once (no oscillation)
+// 退休条件：掌握后连续2天未答错（通过 firstMasteredDate 判断）
 Object.keys(state.mastered).forEach(word=>{
-const count=state.masteredCount[word]||0;
 const first=state.firstMasteredDate[word];
 const isRetired=!!state.retired[word];
 let shouldRetire=false;
-if(count>=2){
-shouldRetire=true
-}else if(first&&state.mastered[word]&&!state.wrong[word]){
+if(first&&state.mastered[word]&&!state.wrong[word]){
 const days=(now-new Date(first))/86400000;
 if(days>=2)shouldRetire=true
 }
@@ -766,8 +775,11 @@ let displayNewWords=getNewWords(day);
 let displayReviewWords=getReviewWords(day);
 if(displayNewWords.length===0 && displayReviewWords.length===0){
 const totalLearned=Object.keys(state.learned||{}).length;
+const retiredCount=Object.keys(state.retired||{}).length;
 if(totalLearned>=VOCAB.length){
 html+='<div class="empty-state"><div class="icon">🏆</div><h3>全部单词已掌握！</h3><p>太棒了！所有单词都已学完，快去考试模式挑战一下吧</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="showView(\'exam\')">🏆 去考试</button><button class="btn btn-outline" onclick="showView(\'progress\')">📊 看进度</button></div></div>';
+}else if(retiredCount>0 && retiredCount>=totalLearned){
+html+='<div class="empty-state"><div class="icon">🔄</div><h3>毕业状态异常</h3><p>已学 '+totalLearned+'/'+VOCAB.length+'，已毕业 '+retiredCount+' 个</p><p style="margin:12px 0;color:#999;font-size:.85rem">大多数单词被标记为毕业，点击下方按钮重置后可继续学习</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="resetRetired();showView(\'learn\')">🔄 重置毕业状态</button><button class="btn btn-outline" onclick="showView(\'progress\')">📊 看进度</button></div></div>';
 }else{
 html+='<div class="empty-state"><div class="icon">📝</div><h3>今日复习已完成</h3><p>新词和复习词都已完成，去错题本巩固一下？</p><div class="controls" style="margin-top:16px"><button class="btn btn-primary" onclick="showView(\'wrong\')">❌ 错题本</button><button class="btn btn-outline" onclick="showView(\'exam\')">🏆 考试</button></div></div>';
 }
@@ -829,8 +841,10 @@ const totalLearned=Object.keys(state.learned||{}).length;
 const retiredCount=Object.keys(state.retired||{}).length;
 if(totalLearned>=VOCAB.length){
 document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🏆</div><h3>全部单词已掌握！</h3><p>太厉害了，所有单词都学会了！</p></div>'
+}else if(retiredCount>0 && retiredCount>=totalLearned){
+document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🔄</div><h3>需要重置毕业状态</h3><p>已学 '+totalLearned+'/'+VOCAB.length+'，已毕业 '+retiredCount+' 个</p><p style="margin:12px 0;color:#999;font-size:.85rem">毕业状态异常，点击下方按钮重置后可继续学习</p><div class="controls"><button class="btn btn-primary" onclick="resetRetired()">🔄 重置毕业状态</button></div></div>'
 }else{
-document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">🔧</div><h3>单词列表为空</h3><p>已学 '+totalLearned+'/'+VOCAB.length+'，已毕业 '+retiredCount+' 个</p><p style="margin:12px 0;color:#999;font-size:.85rem">可能是毕业机制误判导致，点击下方按钮重置</p><div class="controls"><button class="btn btn-primary" onclick="resetRetired()">🔄 重置毕业状态</button></div></div>'
+document.getElementById('view-learn').innerHTML='<div class="empty-state"><div class="icon">📝</div><h3>今日学习已完成</h3><p>已学 '+totalLearned+'/'+VOCAB.length+'</p><p style="margin:12px 0;color:#999;font-size:.85rem">新词和复习词都已完成，去错题本或考试模式继续挑战吧</p><div class="controls"><button class="btn btn-primary" onclick="showView(\'wrong\')">❌ 错题本</button><button class="btn btn-outline" onclick="showView(\'exam\')">🏆 考试</button></div></div>'
 }
 return
 }
@@ -879,7 +893,7 @@ const w=learnWords[learnIdx].w;
 state.learned[w]=true;state.mastered[w]=true;delete state.wrong[w];
 state.masteredCount[w]=(state.masteredCount[w]||0)+1;
 if(!state.firstMasteredDate[w])state.firstMasteredDate[w]=new Date().toISOString();
-if((state.masteredCount[w]||0)>=2)state.retired[w]=true;
+// 退休由 checkRetiredStatus() 根据时间条件统一判断，不在此处立即退休
 state.todayCorrect[getTodayStr()+'-'+w]=true;
 state.lastReviewed[w]=new Date().toISOString();
 state.modeStats.learn.total=(state.modeStats.learn.total||0)+1;
@@ -1437,7 +1451,7 @@ else merged.lastReviewed[w]=ld||rd
 merged.modeStats={
 learn:{total:(local.modeStats&&local.modeStats.learn&&local.modeStats.learn.total||0)+(remote.modeStats&&remote.modeStats.learn&&remote.modeStats.learn.total||0),correct:(local.modeStats&&local.modeStats.learn&&local.modeStats.learn.correct||0)+(remote.modeStats&&remote.modeStats.learn&&remote.modeStats.learn.correct||0)},
 practice:{total:(local.modeStats&&local.modeStats.practice&&local.modeStats.practice.total||0)+(remote.modeStats&&remote.modeStats.practice&&remote.modeStats.practice.total||0),correct:(local.modeStats&&local.modeStats.practice&&local.modeStats.practice.correct||0)+(remote.modeStats&&remote.modeStats.practice&&remote.modeStats.practice.correct||0)},
-quiz:{total:(local.modeStats&&local.modeStats.quiz&&local.modeStats.quiz.total||0)+(remote.modeStats&&remote.modeStats.quiz&&remote.modeStats.quiz.total||0),correct:(local.modeStats&&local.modeStats.quiz&&remote.modeStats.quiz&&remote.modeStats.quiz.correct||0)+(remote.modeStats&&remote.modeStats.quiz&&remote.modeStats.quiz.correct||0)}
+quiz:{total:(local.modeStats&&local.modeStats.quiz&&local.modeStats.quiz.total||0)+(remote.modeStats&&remote.modeStats.quiz&&remote.modeStats.quiz.total||0),correct:(local.modeStats&&local.modeStats.quiz&&local.modeStats.quiz.correct||0)+(remote.modeStats&&remote.modeStats.quiz&&remote.modeStats.quiz.correct||0)}
 };
 // dayProgress：并集
 merged.dayProgress=Object.assign({},local.dayProgress||{},remote.dayProgress||{});
